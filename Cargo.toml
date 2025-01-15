@@ -11,3 +11,14 @@ group = "0.13.0"
 rand_chacha = "0.3.1"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rand = "0.8.5"
+bls12_381 = "0.8.0"
+pairing = "0.23.0"
+subtle = "2.6.1"
+
+
+[[bench]]
+name = "performance"
+harness = false
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }

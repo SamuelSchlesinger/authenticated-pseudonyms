@@ -1,0 +1,715 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use crate::math;
+
+use bls12_381::{Bls12, G1Affine, G1Projective, G2Affine, Scalar};
+use group::ff::Field;
+use group::{Group, GroupEncoding};
+use num::{bigint::RandomBits, BigInt, BigUint};
+use pairing::Engine;
+use rand::distributions::Distribution;
+use rand_chacha::ChaCha20Rng;
+use rand_core::{CryptoRngCore, SeedableRng};
+
+use std::ops::Neg;
+
+const GLOBAL_LABEL: &[u8] = b"ZKAGE_CREDENTIALS_PUBLIC";
+const CLIENT_ISSUANCE_LABEL: &[u8] = b"CLIENT_ISSUANCE";
+const ZKAGE_PROOF_LABEL: &[u8] = b"ZKAGE_PROOF";
+
+/// This value is smaller than it could be for performance reasons.
+pub const MAX_RATE_LIMIT_EXPONENT: u32 = 31;
+
+/// This value can be derived from Theorem 1 in the whitepaper.
+pub const MAX_RANGE_PROOF_BOUND: u64 = 2u64.pow(36) / 3;
+
+/// TODO describe security parameter
+const C: u128 = 2u128.pow(80);
+
+/// TODO describe security parameter
+const L: u128 = 2u128.pow(30);
+
+struct FiatShamir {
+    hasher: blake3::Hasher,
+}
+
+impl FiatShamir {
+    fn new(label: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(GLOBAL_LABEL);
+        hasher.update(label);
+        hasher.update(G1Affine::label());
+        FiatShamir { hasher }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+
+    fn rng(&self) -> impl CryptoRngCore {
+        ChaCha20Rng::from_seed(*self.hasher.finalize().as_bytes())
+    }
+
+    fn rph(&self) -> BigUint {
+        BigUint::from_bytes_le(self.hasher.finalize().as_bytes()) % BigUint::from(C)
+    }
+}
+
+/// Global parameters for the scheme.
+#[derive(Debug, Clone)]
+pub struct Params {
+    h1: G1Affine,
+    h2: G1Affine,
+    h3: G1Affine,
+    h4: G1Affine,
+}
+
+trait HasLabel {
+    fn label() -> &'static [u8];
+}
+
+impl HasLabel for G1Affine {
+    fn label() -> &'static [u8] {
+        b"BLS12_381"
+    }
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        let mut rng = ChaCha20Rng::from_seed(*blake3::hash(b"extremely random string").as_bytes());
+        Params::random(&mut rng)
+    }
+}
+
+impl Params {
+    /// Generate random parameters using the given RNG.
+    pub fn random(mut rng: impl CryptoRngCore) -> Self {
+        Params {
+            h1: G1Projective::random(&mut rng).into(),
+            h2: G1Projective::random(&mut rng).into(),
+            h3: G1Projective::random(&mut rng).into(),
+            h4: G1Projective::random(&mut rng).into(),
+        }
+    }
+}
+
+/// The private key of the issuer.
+#[derive(Debug, Clone)]
+pub struct IssuerPrivateKey {
+    x: Scalar,
+}
+
+/// The public key of the issuer.
+#[derive(Debug, Clone)]
+pub struct IssuerPublicKey {
+    w: G2Affine,
+}
+
+impl IssuerPrivateKey {
+    /// Generate random private key for the issuer.
+    pub fn random(mut rng: impl CryptoRngCore) -> Self {
+        IssuerPrivateKey {
+            x: Scalar::random(&mut rng),
+        }
+    }
+
+    /// Computes the public key of the issuer given the private one.
+    pub fn public(&self) -> IssuerPublicKey {
+        IssuerPublicKey {
+            w: (G2Affine::generator() * self.x).into(),
+        }
+    }
+}
+
+/// The private PRF key held by the client as they request credential issuance.
+#[derive(Debug, Clone)]
+pub struct ClientPrivateKey {
+    k: Scalar,
+}
+
+/// The request sent to the server by the client, proving that they know their private key.
+#[derive(Debug, Clone)]
+pub struct CredentialRequest {
+    big_k: G1Affine,
+    gamma: Scalar,
+    k_bar: Scalar,
+}
+
+impl ClientPrivateKey {
+    /// Generate a new client private key.
+    pub fn random(mut rng: impl CryptoRngCore) -> Self {
+        ClientPrivateKey {
+            k: Scalar::random(&mut rng),
+        }
+    }
+
+    /// Create a request for a new credential issuance associated to the given private key.
+    pub fn credential_request(
+        &self,
+        params: &Params,
+        mut rng: impl CryptoRngCore,
+    ) -> CredentialRequest {
+        let big_k = params.h2 * self.k;
+        let k_prime = Scalar::random(&mut rng);
+        let big_k_1 = params.h2 * k_prime;
+
+        let gamma = {
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL);
+            fiat_shamir.update(big_k.to_bytes().as_ref());
+            fiat_shamir.update(big_k_1.to_bytes().as_ref());
+            let mut fiat_shamir_rng = fiat_shamir.rng();
+
+            Scalar::random(&mut fiat_shamir_rng)
+        };
+
+        let k_bar = gamma * self.k + k_prime;
+
+        CredentialRequest {
+            big_k: big_k.into(),
+            gamma,
+            k_bar,
+        }
+    }
+}
+
+/// The response the server sends back upon a request for issuance.
+#[derive(Debug, Clone)]
+pub struct CredentialResponse {
+    t: Scalar,
+    a: G1Affine,
+    e: Scalar,
+}
+
+impl CredentialRequest {
+    /// Responds to the given credential request with the data needed for the client to construct a
+    /// new credential.
+    pub fn respond(
+        &self,
+        issuer_private_key: &IssuerPrivateKey,
+        params: &Params,
+        t: Scalar,
+        mut rng: impl CryptoRngCore,
+    ) -> Option<CredentialResponse> {
+        let big_k_1 = params.h2 * self.k_bar + self.big_k * self.gamma.neg();
+        let client_gamma = {
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL);
+            fiat_shamir.update(G1Affine::from(self.big_k).to_compressed().as_ref());
+            fiat_shamir.update(G1Affine::from(big_k_1).to_compressed().as_ref());
+            let mut fiat_shamir_rng = fiat_shamir.rng();
+            Scalar::random(&mut fiat_shamir_rng)
+        };
+
+        if client_gamma != self.gamma {
+            return None;
+        }
+
+        let e = Scalar::random(&mut rng);
+        // TODO unwrap here is probably okay, because e is completely random.
+        let a = (G1Affine::generator() + params.h1 * t + self.big_k)
+            * (e + issuer_private_key.x).invert().unwrap();
+        Some(CredentialResponse { t, a: a.into(), e })
+    }
+}
+
+/// A credential which the client holds privately.
+#[derive(Debug, Clone)]
+pub struct Credential {
+    t: Scalar,
+    a: G1Affine,
+    e: Scalar,
+    k: Scalar,
+}
+
+impl ClientPrivateKey {
+    /// Creates a new credential using the original request, response from the server, and the
+    /// client's private PRF key.
+    pub fn create_credential(
+        &self,
+        params: &Params,
+        request: &CredentialRequest,
+        response: &CredentialResponse,
+        issuer_public_key: &IssuerPublicKey,
+    ) -> Option<Credential> {
+        if Bls12::pairing(&response.a, &issuer_public_key.w)
+            != Bls12::pairing(
+                &(response.a * response.e.neg()
+                    + G1Affine::generator()
+                    + params.h1 * response.t
+                    + request.big_k)
+                    .into(),
+                &G2Affine::generator(),
+            )
+        {
+            return None;
+        }
+
+        Some(Credential {
+            t: response.t,
+            a: response.a,
+            e: response.e,
+            k: self.k,
+        })
+    }
+}
+
+#[test]
+fn test_credentials() {
+    use rand_core::{OsRng, RngCore};
+
+    for _ in 0..1 {
+        let issuer_private_key: IssuerPrivateKey = IssuerPrivateKey::random(OsRng);
+        let issuer_public_key = issuer_private_key.public();
+        let params: Params = Params::random(OsRng);
+        let k: ClientPrivateKey = ClientPrivateKey::random(OsRng);
+        let req = k.credential_request(&params, OsRng);
+        let bound = OsRng.next_u64() % MAX_RANGE_PROOF_BOUND;
+        let epoch = OsRng.next_u32();
+        let t = OsRng.next_u64() % bound;
+        let resp = req
+            .respond(&issuer_private_key, &params, Scalar::from(t), OsRng)
+            .unwrap();
+        let cred = k
+            .create_credential(&params, &req, &resp, &issuer_public_key)
+            .unwrap();
+        for _ in 0..10 {
+            let rate_limit_bound = OsRng.next_u32() % MAX_RATE_LIMIT_EXPONENT;
+            let i = OsRng.next_u64() % 2u64.pow(rate_limit_bound);
+            let proof = cred
+                .prove(&params, bound, epoch, OsRng, rate_limit_bound, i)
+                .unwrap();
+            assert!(proof.verify(&params, &issuer_public_key));
+        }
+    }
+}
+
+/// A proof of the underlying credential has a value of less than or equal to the given bound,
+/// along with a rate limiting token and the associated proof of correctness.
+/// 8 + 2 * 4 + 3 * 32 + 4 * 32 * L + 15 * 32
+#[derive(Debug, Clone)]
+pub struct Proof {
+    bound: u64,
+    rate_limit_exponent: u32,
+    epoch: u32,
+    a_prime: G1Affine,
+    b_bar: G1Affine,
+    a_bar: G1Affine,
+    y: G1Affine,
+    com: Vec<G1Affine>,
+    c_y: G1Affine,
+    c_star: G1Affine,
+    gamma: Scalar,
+    z_e: Scalar,
+    z_r2: Scalar,
+    z_r3: Scalar,
+    z_delta: Scalar,
+    z_k: Scalar,
+    z_s: Scalar,
+    gamma0: Vec<Scalar>,
+    z0: Vec<Scalar>,
+    z1: Vec<Scalar>,
+    t_y: Scalar,
+    z_1y: Scalar,
+    z_2y: Scalar,
+    z_3y: Scalar,
+    z_4y: Scalar,
+    t_star: Scalar,
+}
+
+impl Proof {
+    /// The upper bound which this proof proves the secret value is less than or equal to.
+    pub fn bound(&self) -> u64 {
+        self.bound
+    }
+
+    /// The logarithm of the rate limiting bound.
+    pub fn rate_limiting_exponent(&self) -> u32 {
+        self.rate_limit_exponent
+    }
+
+    /// The rate limiting token itself, of which only a certain number can be created per epoch.
+    pub fn rate_limiting_token(&self) -> &G1Affine {
+        &self.y
+    }
+
+    /// The epoch that this proof is computed for.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+}
+
+impl Credential {
+    /// Prove that the credential's underlying value is less than or equal to the given bound,
+    /// along with proving/producing a valid rate limiting token for this epoch.
+    pub fn prove(
+        &self,
+        params: &Params,
+        bound: u64,
+        epoch: u32,
+        mut rng: impl CryptoRngCore,
+        rate_limit_exponent: u32,
+        i: u64,
+    ) -> Option<Proof> {
+        let bound_bigint = BigUint::from(bound);
+        let t_bigint = scalar_to_bigint(&self.t);
+        if t_bigint > bound_bigint {
+            return None;
+        }
+        let delta_bigint = &bound_bigint - t_bigint;
+        if bound > MAX_RANGE_PROOF_BOUND {
+            return None;
+        }
+        let sbound = Scalar::from(bound);
+        if rate_limit_exponent > MAX_RATE_LIMIT_EXPONENT {
+            return None;
+        }
+        let mut fiat_shamir = FiatShamir::new(ZKAGE_PROOF_LABEL);
+
+        // == PoK of Credential: Commitment Phase ==
+        let r1 = Scalar::random(&mut rng);
+        let r2 = Scalar::random(&mut rng);
+        let e_prime = Scalar::random(&mut rng);
+        let r2_prime = Scalar::random(&mut rng);
+        let r3_prime = Scalar::random(&mut rng);
+        let delta_prime = Scalar::random(&mut rng);
+        let k_prime = Scalar::random(&mut rng);
+        let s_prime = Scalar::random(&mut rng);
+
+        let b = G1Affine::generator() + params.h1 * self.t + params.h2 * self.k;
+        let a_prime = self.a * (r1 * r2);
+        let b_bar = b * r1;
+        let a_bar = a_prime * (self.e.neg()) + b_bar * r2;
+        // TODO again, probably okay cause its totally random
+        let r3 = r1.invert().unwrap();
+        let delta = sbound - self.t;
+        // TODO check that delta >= 0
+        let a1 = a_prime * e_prime + b_bar * r2_prime;
+        let a2 =
+            b_bar * r3_prime + params.h1 * delta_prime + params.h2 * k_prime + params.h3 * s_prime;
+
+        fiat_shamir.update(a_prime.to_bytes().as_ref());
+        fiat_shamir.update(b_bar.to_bytes().as_ref());
+
+        fiat_shamir.update(a1.to_bytes().as_ref());
+        fiat_shamir.update(a2.to_bytes().as_ref());
+        // == End ==
+
+        // == PRF + Commitments and Associated Proofs: Commitment Phase ==
+        let y = params.h2
+            * (self.k
+                + Scalar::from(2u64.pow(rate_limit_exponent)) * Scalar::from(epoch as u64)
+                + Scalar::from(i))
+            .invert()
+            .unwrap();
+        fiat_shamir.update(y.to_bytes().as_ref());
+        let mut com = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut s = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut s_star = Scalar::from(0u64);
+        let mut c0 = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut c1 = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut c0_prime = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut c1_prime = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut r = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut gamma = Vec::with_capacity(rate_limit_exponent as usize);
+        let mut z = Vec::with_capacity(rate_limit_exponent as usize);
+        for j in 0..rate_limit_exponent {
+            let s_j = Scalar::random(&mut rng);
+            s.push(s_j);
+            let i_j = if (i >> j) & 1 != 0 { 1 } else { 0 };
+            let com_j = params.h3 * s_j + params.h2 * Scalar::from(i_j as u64);
+            com.push(com_j.into());
+            fiat_shamir.update(com_j.to_bytes().as_ref());
+            s_star += Scalar::from(2u64.pow(j)) * s_j;
+            let r_j = Scalar::random(&mut rng);
+            r.push(r_j);
+            let gamma_j = Scalar::random(&mut rng);
+            gamma.push(gamma_j);
+            let z_j = Scalar::random(&mut rng);
+            z.push(z_j);
+            let c0_j = com_j;
+            c0.push(c0_j);
+            let c1_j = com_j - params.h2;
+            c1.push(c1_j);
+            let (c0_prime_j, c1_prime_j) = if i_j == 0 {
+                let c0_prime_j = params.h3 * r_j;
+                c0_prime.push(c0_prime_j);
+                let c1_prime_j = params.h3 * z_j + c1_j * gamma_j.neg();
+                c1_prime.push(c1_prime_j);
+                (c0_prime_j, c1_prime_j)
+            } else {
+                let c0_prime_j = params.h3 * z_j + c0_j * gamma_j.neg();
+                c0_prime.push(c0_prime_j);
+                let c1_prime_j = params.h3 * r_j;
+                c1_prime.push(c1_prime_j);
+                (c0_prime_j, c1_prime_j)
+            };
+            fiat_shamir.update(c0_prime_j.to_bytes().as_ref());
+            fiat_shamir.update(c1_prime_j.to_bytes().as_ref());
+        }
+        let y1 = y * k_prime.neg();
+        fiat_shamir.update(y1.to_bytes().as_ref());
+        // == End ==
+
+        // == Range Proof: Commitment Phase ==
+        let (y1, y2, y3, y4): (BigInt, BigInt, BigInt, BigInt) =
+            math::lagrange_decomposition::decompose(&mut rng, delta_bigint.into());
+        let y1 = bigint_to_scalar(&y1.into_parts().1).unwrap();
+        let y2 = bigint_to_scalar(&y2.into_parts().1).unwrap();
+        let y3 = bigint_to_scalar(&y3.into_parts().1).unwrap();
+        let y4 = bigint_to_scalar(&y4.into_parts().1).unwrap();
+        let r_y = Scalar::random(&mut rng);
+        let r_y_tilde = Scalar::random(&mut rng);
+        let y_i_tilde_bound = bound_bigint.sqrt() * BigUint::from(C) * BigUint::from(L);
+        let (y1_tilde, y2_tilde, y3_tilde, y4_tilde) = {
+            if bound_bigint > BigUint::from(0u64) {
+                let y1_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y1_tilde: BigUint = y1_tilde % &y_i_tilde_bound;
+                let y2_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y2_tilde: BigUint = y2_tilde % &y_i_tilde_bound;
+                let y3_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y3_tilde: BigUint = y3_tilde % &y_i_tilde_bound;
+                let y4_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y4_tilde: BigUint = y4_tilde % &y_i_tilde_bound;
+
+                (
+                    bigint_to_scalar(&y1_tilde).unwrap(),
+                    bigint_to_scalar(&y2_tilde).unwrap(),
+                    bigint_to_scalar(&y3_tilde).unwrap(),
+                    bigint_to_scalar(&y4_tilde).unwrap(),
+                )
+            } else {
+                (
+                    Scalar::from(0u64),
+                    Scalar::from(0u64),
+                    Scalar::from(0u64),
+                    Scalar::from(0u64),
+                )
+            }
+        };
+        let c_y = G1Affine::generator() * r_y
+            + params.h1 * y1
+            + params.h2 * y2
+            + params.h3 * y3
+            + params.h4 * y4;
+        fiat_shamir.update(c_y.to_bytes().as_ref());
+        let d_y = G1Affine::generator() * r_y_tilde
+            + params.h1 * y1_tilde
+            + params.h2 * y2_tilde
+            + params.h3 * y3_tilde
+            + params.h4 * y4_tilde;
+        fiat_shamir.update(d_y.to_bytes().as_ref());
+        let alpha = delta_prime
+            - Scalar::from(2u64) * (y1 * y1_tilde + y2 * y2_tilde + y3 * y3_tilde + y4 * y4_tilde);
+        let alpha_tilde = y1_tilde.square().neg()
+            + y2_tilde.square().neg()
+            + y3_tilde.square().neg()
+            + y4_tilde.square().neg();
+        let r_star = Scalar::random(&mut rng);
+        let c_star = G1Affine::generator() * r_star + params.h1 * alpha;
+        fiat_shamir.update(c_star.to_bytes().as_ref());
+        let r_star_tilde = Scalar::random(&mut rng);
+        let d_star = G1Affine::generator() * r_star_tilde + params.h1 * alpha_tilde;
+        fiat_shamir.update(d_star.to_bytes().as_ref());
+        // == End ==
+
+        // == Challenge Phase ==
+        let challenge_gamma: Scalar = bigint_to_scalar(&fiat_shamir.rph()).unwrap();
+        // == End ==
+
+        // == Proof of Knowledge of Credential: Response ==
+        let z_e = challenge_gamma.neg() * self.e + e_prime;
+        let z_r2 = challenge_gamma * r2 + r2_prime;
+        let z_r3 = challenge_gamma * r3 + r3_prime;
+        let z_delta = challenge_gamma * delta + delta_prime;
+        let z_k = challenge_gamma.neg() * (self.k + Scalar::from(i)) + k_prime;
+        let z_s = challenge_gamma.neg() * s_star + s_prime;
+        // == End ==
+
+        // == Proofs for commitments + PRF: Response ==
+        let mut gamma0 = Vec::new();
+        let mut z0 = Vec::new();
+        let mut z1 = Vec::new();
+        for j in 0..rate_limit_exponent {
+            let i_j = if (i >> j) & 1 != 0 { 1 } else { 0 };
+            let j = j as usize;
+            if i_j == 0 {
+                gamma0.push(challenge_gamma - gamma[j]);
+                z0.push(gamma0[j] * s[j] + r[j]);
+                z1.push(z[j]);
+            } else {
+                gamma0.push(gamma[j]);
+                z0.push(z[j]);
+                z1.push((challenge_gamma - gamma0[j]) * s[j] + r[j]);
+            }
+        }
+        // == End ==
+
+        // == Range Proof: Response ==
+        let t_y = challenge_gamma * r_y + r_y_tilde;
+        let z_1y = challenge_gamma * y1 + y1_tilde;
+        let z_2y = challenge_gamma * y2 + y2_tilde;
+        let z_3y = challenge_gamma * y3 + y3_tilde;
+        let z_4y = challenge_gamma * y4 + y4_tilde;
+        let t_star = challenge_gamma * r_star + r_star_tilde;
+        // == End ==
+
+        Some(Proof {
+            bound,
+            rate_limit_exponent,
+            epoch,
+            a_prime: a_prime.into(),
+            b_bar: b_bar.into(),
+            a_bar: a_bar.into(),
+            y: y.into(),
+            com,
+            c_y: c_y.into(),
+            c_star: c_star.into(),
+            gamma: challenge_gamma,
+            z_e,
+            z_r2,
+            z_r3,
+            z_delta,
+            z_k,
+            z_s,
+            gamma0,
+            z0,
+            z1,
+            t_y,
+            z_1y,
+            z_2y,
+            z_3y,
+            z_4y,
+            t_star,
+        })
+    }
+}
+
+impl Proof {
+    /// Verify that the given proof is correct.
+    pub fn verify(&self, params: &Params, issuer_public_key: &IssuerPublicKey) -> bool {
+        let sbound = Scalar::from(self.bound);
+        if scalar_to_bigint(&sbound) > BigUint::from(MAX_RANGE_PROOF_BOUND) {
+            return false;
+        }
+        if BigUint::from(self.rate_limit_exponent) > BigUint::from(MAX_RATE_LIMIT_EXPONENT) {
+            return false;
+        }
+        if self.rate_limit_exponent != self.z0.len() as u32
+            && self.rate_limit_exponent != self.z1.len() as u32
+            && self.rate_limit_exponent != self.com.len() as u32
+        {
+            return false;
+        }
+        if self.a_prime == G1Affine::identity() {
+            return false;
+        }
+        if Bls12::pairing(&self.a_prime, &issuer_public_key.w)
+            != Bls12::pairing(&self.a_bar, &G2Affine::generator())
+        {
+            return false;
+        }
+
+        let mut fiat_shamir = FiatShamir::new(ZKAGE_PROOF_LABEL);
+        fiat_shamir.update(self.a_prime.to_bytes().as_ref());
+        fiat_shamir.update(self.b_bar.to_bytes().as_ref());
+
+        let z_i_y_bound =
+            scalar_to_bigint(&sbound).sqrt() * BigUint::from(C) * (BigUint::from(L) + 1u64);
+
+        let z_1y = scalar_to_bigint(&self.z_1y);
+        let z_2y = scalar_to_bigint(&self.z_2y);
+        let z_3y = scalar_to_bigint(&self.z_3y);
+        let z_4y = scalar_to_bigint(&self.z_4y);
+
+        if z_1y > z_i_y_bound || z_2y > z_i_y_bound || z_3y > z_i_y_bound || z_4y > z_i_y_bound {
+            return false;
+        }
+
+        let h1 = G1Affine::generator() + params.h1 * sbound + {
+            let mut acc = G1Projective::identity();
+            for (j, com_j) in self.com.iter().enumerate() {
+                acc += com_j * Scalar::from(2u64.pow(j as u32));
+            }
+            acc.neg()
+        };
+        let a1 = self.a_prime * self.z_e + self.b_bar * self.z_r2 + self.a_bar * self.gamma.neg();
+        let a2 = self.b_bar * self.z_r3
+            + params.h1 * self.z_delta
+            + params.h2 * self.z_k
+            + params.h3 * self.z_s
+            + h1 * self.gamma.neg();
+        fiat_shamir.update(a1.to_bytes().as_ref());
+        fiat_shamir.update(a2.to_bytes().as_ref());
+        fiat_shamir.update(self.y.to_bytes().as_ref());
+
+        for j in 0..(self.rate_limit_exponent as usize) {
+            fiat_shamir.update(self.com[j].to_bytes().as_ref());
+            let gamma1_j = self.gamma - self.gamma0[j];
+            let c0_j = self.com[j];
+            let c1_j = G1Projective::from(self.com[j]) + G1Projective::from(params.h2.neg());
+            let c0_prime_j = params.h3 * self.z0[j] + c0_j * self.gamma0[j].neg();
+            let c1_prime_j = params.h3 * self.z1[j] + c1_j * gamma1_j.neg();
+            fiat_shamir.update(c0_prime_j.to_bytes().as_ref());
+            fiat_shamir.update(c1_prime_j.to_bytes().as_ref());
+        }
+
+        let y1 = self.y * self.z_k.neg()
+            + (params.h2
+                - self.y
+                    * (Scalar::from(2u64.pow(self.rate_limit_exponent))
+                        * Scalar::from(self.epoch as u64)))
+                * self.gamma.neg();
+        fiat_shamir.update(y1.to_bytes().as_ref());
+        fiat_shamir.update(self.c_y.to_bytes().as_ref());
+
+        let d_y = self.c_y * self.gamma.neg()
+            + G1Affine::generator() * self.t_y
+            + params.h1 * self.z_1y
+            + params.h2 * self.z_2y
+            + params.h3 * self.z_3y
+            + params.h4 * self.z_4y;
+        fiat_shamir.update(d_y.to_bytes().as_ref());
+        let f_star = self.gamma * self.z_delta
+            - (self.z_1y.square() + self.z_2y.square() + self.z_3y.square() + self.z_4y.square());
+        fiat_shamir.update(self.c_star.to_bytes().as_ref());
+        let d_star = self.c_star * self.gamma.neg()
+            + G1Affine::generator() * self.t_star
+            + params.h1 * f_star;
+        fiat_shamir.update(d_star.to_bytes().as_ref());
+
+        fiat_shamir.rph() == scalar_to_bigint(&self.gamma)
+    }
+}
+
+fn scalar_to_bigint(s: &Scalar) -> BigUint {
+    BigUint::from_bytes_le(&s.to_bytes())
+}
+
+fn bigint_to_scalar(b: &BigUint) -> Option<Scalar> {
+    use std::ops::Neg;
+    let q = scalar_to_bigint(&(Scalar::ONE.neg())) + BigUint::from(1u64);
+    if b >= &q {
+        return None;
+    }
+    let b_bs = b.to_bytes_le();
+    let mut s_bs = [0u8; 32];
+    for i in 0..32 {
+        if i >= b_bs.len() {
+            break;
+        }
+        s_bs[i] = b_bs[i];
+    }
+
+    Scalar::from_bytes(&s_bs).into()
+}
