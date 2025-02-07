@@ -15,7 +15,7 @@ schemes.
 
 In our work, we rely on the BBS signature scheme, and the Dodis-Yampolskiy VRF.
 We utilize both the publicly verifiable and privately verifiable variants of
-BBS and Dodis-Yampolskiy, yielding approaches with various cryptography
+BBS, yielding approaches with various cryptography
 assumptions and capabilities. Our publicly verifiable approaches rely on
 pairings, and we use the BLS12-381 pairing in this implementation. Our
 privately verifiable approach does not rely on pairings, and we instantiate
