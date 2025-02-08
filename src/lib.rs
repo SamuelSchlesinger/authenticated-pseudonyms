@@ -16,25 +16,29 @@
 //!
 //! Often, one wants to communicate authentication without identity. In these circumstances,
 //! one can authenticate a pseudonym scoped by a label for each different context in which one
-//! needs to authenticate unlinkably. Within the scope, one can have a given number of pseudonyms,
-//! determined by the relying parties. In our implementation, the pseudonym limit is required to be
-//! a power of two.
+//! needs to authenticate unlinkably.
 
+#[cfg(any(feature = "private_range", feature = "public_range"))]
 pub(crate) mod math;
 
+#[cfg(any(feature = "private_range", feature = "public_range"))]
 pub mod age {
     /// Authenticated pseudonyms where the relying party must be the issuer. This is useful in internal
     /// authentication systems within a single entity.
+    #[cfg(feature = "private_range")]
     pub mod private;
 
     /// Authenticated pseudonyms where the relying party can be anyone. This is useful for interlocking
     /// systems of authentication, where one party may give permission to access the resources of
     /// another.
+    #[cfg(feature = "public_range")]
     pub mod public;
 }
 
 /// Local pseudonyms, linkable by the issuer but not by relying parties alone.
+#[cfg(feature = "pseudonym")]
 pub mod pseudonym;
 
 /// Local pseudonyms, fully unlinkable.
+#[cfg(feature = "unlinkable_pseudonym")]
 pub mod unlinkable_pseudonym;
