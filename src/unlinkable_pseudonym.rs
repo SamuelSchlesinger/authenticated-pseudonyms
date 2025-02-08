@@ -221,7 +221,9 @@ impl Credential {
     }
 }
 
-/// A local pseudonym derived for a particular context.
+/// A local pseudonym derived for a particular context. This pseudonym is unlinkable, such that
+/// even if the relying parties collude with each other and the issuer, they cannot link two
+/// pseudonyms derived from the same underlying credential.
 #[derive(Debug, Clone)]
 pub struct Pseudonym {
     relying_party_id: Scalar,

@@ -121,8 +121,9 @@ impl Credential {
     ) -> CtOption<Credential> {
         let k = Scalar::random(&mut rng);
         let e = Scalar::random(&mut rng);
-        let a =
-            (e + issuer_private_key.x).invert().map(|i| (G1Affine::generator() + params.h * k) * i);
+        let a = (e + issuer_private_key.x)
+            .invert()
+            .map(|i| (G1Affine::generator() + params.h * k) * i);
         a.map(|a| Credential { a: a.into(), e, k })
     }
 
@@ -134,8 +135,9 @@ impl Credential {
         mut rng: impl CryptoRngCore,
     ) -> CtOption<Credential> {
         let e = Scalar::random(&mut rng);
-        let a =
-            (e + issuer_private_key.x).invert().map(|i| (G1Affine::generator() + params.h * k) * i);
+        let a = (e + issuer_private_key.x)
+            .invert()
+            .map(|i| (G1Affine::generator() + params.h * k) * i);
         a.map(|a| Credential { a: a.into(), e, k })
     }
 
@@ -152,7 +154,9 @@ impl Credential {
     }
 }
 
-/// A local pseudonym derived for a particular context.
+/// A local pseudonym derived for a particular context. With assistance from the issuer, this
+/// pseudonym can be de-anonymized. Without the issuer's help, relying parties cannot tell whether
+/// two pseudonyms belong to the same person.
 #[derive(Debug, Clone)]
 pub struct Pseudonym {
     relying_party_id: Scalar,
@@ -233,7 +237,12 @@ impl Credential {
 
 impl Pseudonym {
     /// Verify the pseudonym's correctness.
-    pub fn verify(&self, params: &Params, issuer_public_key: &IssuerPublicKey, nonce: &[u8]) -> Choice {
+    pub fn verify(
+        &self,
+        params: &Params,
+        issuer_public_key: &IssuerPublicKey,
+        nonce: &[u8],
+    ) -> Choice {
         let mut choice = Choice::from(1);
 
         choice &= !self.a_prime.ct_eq(&G1Affine::identity());
@@ -289,20 +298,28 @@ fn test() {
             cred1.verify(&params, &issuer_private_key.public())
         ));
         let relying_party_id = Scalar::random(OsRng);
-        let pseudonym1 = cred1.pseudonym_for(&params, relying_party_id, b"nonce", OsRng).unwrap();
-        assert!(bool::from(
-            pseudonym1.verify(&params, &issuer_private_key.public(), b"nonce")
-        ));
+        let pseudonym1 = cred1
+            .pseudonym_for(&params, relying_party_id, b"nonce", OsRng)
+            .unwrap();
+        assert!(bool::from(pseudonym1.verify(
+            &params,
+            &issuer_private_key.public(),
+            b"nonce"
+        )));
         assert_eq!(pseudonym1.relying_party_id(), &relying_party_id);
         let vrf_key = cred1.vrf_key().clone();
         let cred2 = Credential::recover(&params, &issuer_private_key, vrf_key, OsRng).unwrap();
         assert!(bool::from(
             cred2.verify(&params, &issuer_private_key.public())
         ));
-        let pseudonym2 = cred2.pseudonym_for(&params, relying_party_id, b"nonce2", OsRng).unwrap();
-        assert!(bool::from(
-            pseudonym2.verify(&params, &issuer_private_key.public(), b"nonce2")
-        ));
+        let pseudonym2 = cred2
+            .pseudonym_for(&params, relying_party_id, b"nonce2", OsRng)
+            .unwrap();
+        assert!(bool::from(pseudonym2.verify(
+            &params,
+            &issuer_private_key.public(),
+            b"nonce2"
+        )));
         assert_eq!(pseudonym1.pseudonym_id(), pseudonym2.pseudonym_id());
     }
 }
