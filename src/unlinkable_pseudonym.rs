@@ -96,6 +96,11 @@ impl ClientPrivateKey {
         }
     }
 
+    /// Recover a client private key from a backup.
+    pub fn recover(k: Scalar) -> Self {
+        ClientPrivateKey { k }
+    }
+
     /// Create a request for a new credential issuance associated to the given private key.
     pub fn request(&self, params: &Params, mut rng: impl CryptoRngCore) -> CredentialRequest {
         let big_k = params.h * self.k;

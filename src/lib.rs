@@ -21,6 +21,7 @@
 #[cfg(any(feature = "private_range", feature = "public_range"))]
 pub(crate) mod math;
 
+/// Rate limited range proofs, which can be used for proofs of various types of ages.
 #[cfg(any(feature = "private_range", feature = "public_range"))]
 pub mod age {
     /// Authenticated pseudonyms where the relying party must be the issuer. This is useful in internal
