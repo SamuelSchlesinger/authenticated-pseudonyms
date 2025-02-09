@@ -146,7 +146,7 @@ assert!(bool::from(pseudonym1.verify(
 assert_eq!(pseudonym1.relying_party_id(), &relying_party_id);
 
 // recovery requires the client store the VRF key persistently
-let client_private_key: ClientPrivateKey = ClientPrivateKey::recovery(cred1.vrf_key());
+let client_private_key: ClientPrivateKey = ClientPrivateKey::recover(cred1.vrf_key().clone());
 
 // computed on client, sent to server
 let cred_request = client_private_key.request(&params, OsRng);
