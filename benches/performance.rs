@@ -35,7 +35,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 }
 
 fn public_benchmark(c: &mut Criterion) {
-    use authenticated_pseudonyms::public::*;
+    use authenticated_pseudonyms::age::public::*;
     let mut rng = chacha_rng();
     let issuer_private_key = IssuerPrivateKey::random(&mut rng);
     let client_private_key = ClientPrivateKey::random(&mut rng);
@@ -153,7 +153,7 @@ criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
 fn private_benchmark(c: &mut Criterion) {
-    use authenticated_pseudonyms::private::*;
+    use authenticated_pseudonyms::age::private::*;
     let mut rng = chacha_rng();
     let issuer_private_key = IssuerPrivateKey::random(&mut rng);
     let client_private_key = ClientPrivateKey::random(&mut rng);
