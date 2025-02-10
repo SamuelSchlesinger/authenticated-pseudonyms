@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/SamuelSchlesinger/authenticated-pseudonyms"
 license = "Apache-2.0"
-keywords = ["cryptography", "credentials", "anonymous", "pseudonymous", "pseudonym", "authentication"]
+keywords = ["cryptography", "credentials", "anonymous", "pseudonym", "authentication"]
 description = "An implementation of anonymous credentials"
 
 [dependencies]
