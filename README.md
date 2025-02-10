@@ -45,11 +45,6 @@ signing the input `t` to the `t <= BOUND` range proof, we can use an
 approximate approach called SHARP in order to create a more efficient range
 proof. There are examples of this approach below.
 
-We have a much more formal discussion of the design in the [design](./design)
-subdirectory. Missing is a formal definition for the unlinkable pseudonym,
-which can be derived by combining the issuance from the age proofs with the
-linkable pseudonym approach.
-
 # Examples
 
 ## (Issuer Linkable) Pseudonym
