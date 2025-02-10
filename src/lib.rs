@@ -17,6 +17,10 @@
 //! Often, one wants to communicate authentication without identity. In these circumstances,
 //! one can authenticate a pseudonym scoped by a label for each different context in which one
 //! needs to authenticate unlinkably.
+//!
+//! This project is intended for demonstration purposes only. It is not intended
+//! for use in a production environment. It currently contains unaudited,
+//! experimental cryptography which is not suited for production environments.
 
 #[cfg(any(feature = "private_range", feature = "public_range"))]
 pub(crate) mod math;
