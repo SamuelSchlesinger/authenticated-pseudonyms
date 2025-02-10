@@ -105,6 +105,8 @@ assert_eq!(pseudonym1.pseudonym_id(), pseudonym2.pseudonym_id());
 
 ## Unlinkable Pseudonym
 
+![Image](./pseudonym_sequence_diagram.png)
+
 ```rust
 // globally decided upon amongst all parties
 let params = Params::default();
