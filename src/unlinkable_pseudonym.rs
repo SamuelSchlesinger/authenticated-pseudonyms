@@ -7,6 +7,9 @@ use rand_core::{CryptoRngCore, SeedableRng};
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
 use std::ops::Neg;
+use std::marker::PhantomData;
+
+use crate::traits::Hasher;
 
 const CLIENT_ISSUANCE_LABEL: &[u8] = b"CLIENT_ISSUANCE";
 const PSEUDONYM_LABEL: &[u8] = b"PSEUDONYM";
@@ -14,26 +17,30 @@ const GLOBAL_LABEL: &[u8] = b"SOCIAL_LOGIN";
 
 /// Parameters for the protocol.
 #[derive(Clone, Debug)]
-pub struct Params {
+pub struct Params<H: Hasher> {
     h: G1Affine,
+    _hasher: PhantomData<H>,
 }
 
-impl Params {
+impl<H: Hasher> Params<H> {
     pub fn default() -> Self {
-        let mut rng = ChaCha20Rng::from_seed(*blake3::hash(b"a very special string").as_bytes());
+        let mut hasher = H::default();
+        hasher.update(b"a very special string");
+        let mut rng = ChaCha20Rng::from_seed(hasher.finalize());
         Params {
             h: G1Projective::random(&mut rng).into(),
+            _hasher: PhantomData::default(),
         }
     }
 }
 
-struct FiatShamir {
-    hasher: blake3::Hasher,
+struct FiatShamir<H: Hasher> {
+    hasher: H,
 }
 
-impl FiatShamir {
+impl<H: Hasher> FiatShamir<H> {
     fn new(label: &[u8], nonce: &[u8]) -> Self {
-        let mut hasher = blake3::Hasher::new();
+        let mut hasher = H::default();
         hasher.update(GLOBAL_LABEL);
         hasher.update(G1Affine::label());
         hasher.update(label);
@@ -46,7 +53,7 @@ impl FiatShamir {
     }
 
     fn rng(&self) -> impl CryptoRngCore {
-        ChaCha20Rng::from_seed(*self.hasher.finalize().as_bytes())
+        ChaCha20Rng::from_seed(self.hasher.finalize())
     }
 }
 
@@ -102,13 +109,13 @@ impl ClientPrivateKey {
     }
 
     /// Create a request for a new credential issuance associated to the given private key.
-    pub fn request(&self, params: &Params, mut rng: impl CryptoRngCore) -> CredentialRequest {
+    pub fn request<H: Hasher>(&self, params: &Params<H>, mut rng: impl CryptoRngCore) -> CredentialRequest {
         let big_k = params.h * self.k;
         let k_prime = Scalar::random(&mut rng);
         let big_k_1 = params.h * k_prime;
 
         let gamma = {
-            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL, b"");
+            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL, b"");
             fiat_shamir.update(GroupEncoding::to_bytes(&big_k).as_ref());
             fiat_shamir.update(GroupEncoding::to_bytes(&big_k_1).as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -136,15 +143,15 @@ pub struct CredentialResponse {
 impl CredentialRequest {
     /// Responds to the given credential request with the data needed for the client to construct a
     /// new credential.
-    pub fn respond(
+    pub fn respond<H: Hasher>(
         &self,
         issuer_private_key: &IssuerPrivateKey,
-        params: &Params,
+        params: &Params<H>,
         mut rng: impl CryptoRngCore,
     ) -> Option<CredentialResponse> {
         let big_k_1 = params.h * self.k_bar + self.big_k * self.gamma.neg();
         let client_gamma = {
-            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL, b"");
+            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL, b"");
             fiat_shamir.update(G1Affine::from(self.big_k).to_compressed().as_ref());
             fiat_shamir.update(G1Affine::from(big_k_1).to_compressed().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -214,7 +221,7 @@ impl ClientPrivateKey {
 
 impl Credential {
     /// Verify the validity of the given credential.
-    pub fn verify(&self, params: &Params, issuer_public_key: &IssuerPublicKey) -> Choice {
+    pub fn verify<H: Hasher>(&self, params: &Params<H>, issuer_public_key: &IssuerPublicKey) -> Choice {
         Bls12::pairing(&self.a, &issuer_public_key.w).ct_eq(&Bls12::pairing(
             &G1Affine::from(&self.a * self.e.neg() + G1Affine::generator() + params.h * self.k),
             &G2Affine::generator(),
@@ -245,14 +252,14 @@ pub struct Pseudonym {
 
 impl Credential {
     /// Compute a pseudonym for the given context.
-    pub fn pseudonym_for(
+    pub fn pseudonym_for<H: Hasher>(
         &self,
-        params: &Params,
+        params: &Params<H>,
         relying_party_id: Scalar,
         nonce: &[u8],
         mut rng: impl CryptoRngCore,
     ) -> CtOption<Pseudonym> {
-        let mut fiat_shamir = FiatShamir::new(PSEUDONYM_LABEL, nonce);
+        let mut fiat_shamir = FiatShamir::<H>::new(PSEUDONYM_LABEL, nonce);
 
         let r1 = Scalar::random(&mut rng);
         let r2 = Scalar::random(&mut rng);
@@ -309,9 +316,9 @@ impl Credential {
 
 impl Pseudonym {
     /// Verify the pseudonym's correctness.
-    pub fn verify(
+    pub fn verify<H: Hasher>(
         &self,
-        params: &Params,
+        params: &Params<H>,
         issuer_public_key: &IssuerPublicKey,
         nonce: &[u8],
     ) -> Choice {
@@ -321,7 +328,7 @@ impl Pseudonym {
         choice &= Bls12::pairing(&self.a_prime, &issuer_public_key.w)
             .ct_eq(&Bls12::pairing(&self.a_bar, &G2Affine::generator()));
 
-        let mut fiat_shamir = FiatShamir::new(PSEUDONYM_LABEL, nonce);
+        let mut fiat_shamir = FiatShamir::<H>::new(PSEUDONYM_LABEL, nonce);
 
         fiat_shamir.update(GroupEncoding::to_bytes(&self.a_prime).as_ref());
         fiat_shamir.update(GroupEncoding::to_bytes(&self.b_bar).as_ref());
@@ -363,7 +370,8 @@ impl Pseudonym {
 fn test() {
     for _ in 0..10 {
         use rand_core::OsRng;
-        let params = Params::default();
+        use sha2::Sha256;
+        let params = Params::<Sha256>::default();
         let issuer_private_key = IssuerPrivateKey::random(OsRng);
         let client_private_key = ClientPrivateKey::random(OsRng);
         let credreq = client_private_key.request(&params, OsRng);
