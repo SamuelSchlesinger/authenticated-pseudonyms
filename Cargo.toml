@@ -6,6 +6,7 @@ repository = "https://github.com/SamuelSchlesinger/authenticated-pseudonyms"
 license = "Apache-2.0"
 keywords = ["cryptography", "credentials", "anonymous", "pseudonym", "authentication"]
 description = "An implementation of anonymous credentials"
+readme = "README.md"
 
 [dependencies]
 curve25519-dalek = { version = "4.1.3", default-features = false, features = ["ff", "group"] }
