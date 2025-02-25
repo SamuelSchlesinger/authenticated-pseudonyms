@@ -25,7 +25,7 @@ checksum = "55cc3b69f167a1ef2e161439aa98aed94e6028e5f9a59be9a6ffb47aef1651f9"
 
 [[package]]
 name = "authenticated-pseudonyms"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "bls12_381",
  "criterion",
@@ -245,7 +245,6 @@ dependencies = [
  "rand_core",
  "rustc_version",
  "subtle",
- "zeroize",
 ]
 
 [[package]]
@@ -942,9 +941,3 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[package]]
-name = "zeroize"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ced3678a2879b30306d323f4542626697a464a97c0a07c9aebf7ebca65cd4dde"
