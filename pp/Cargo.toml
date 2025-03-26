@@ -1,5 +1,5 @@
 [package]
-name = "authenticated-pseudonyms"
+name = "private-proofs-crypto"
 version = "0.3.2"
 edition = "2021"
 repository = "https://github.com/SamuelSchlesinger/authenticated-pseudonyms"
@@ -17,5 +17,10 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 rand = "0.8.5"
 subtle = "2.6.1"
 
+[[bench]]
+name = "performance"
+harness = false
+
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 sha2 = "0.10.8"
