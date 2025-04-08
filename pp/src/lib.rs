@@ -13,16 +13,15 @@
 // limitations under the License.
 
 pub mod math;
+pub mod traits;
 
 use curve25519_dalek::{RistrettoPoint, Scalar};
 use group::ff::Field;
 use group::{Group, GroupEncoding};
-use num::{bigint::RandomBits, BigInt, BigUint};
-use rand::distributions::Distribution;
-use rand_chacha::ChaCha20Rng;
-use rand_core::{CryptoRngCore, SeedableRng};
+use num::{BigInt, BigUint};
 use digest::Digest;
 use digest::consts::U32;
+use traits::{CryptoRngCore, RandomBigIntExt, ChaCha20Rng, RngCore};
 
 use std::ops::Neg;
 use std::marker::PhantomData;
@@ -33,6 +32,26 @@ const GLOBAL_LABEL: &[u8] = b"ZKAGE_CREDENTIALS_PRIVATE";
 const CLIENT_ISSUANCE_LABEL: &[u8] = b"CLIENT_ISSUANCE";
 const SERVER_ISSUANCE_LABEL: &[u8] = b"SERVER_ISSUANCE";
 const ZKAGE_PROOF_LABEL: &[u8] = b"ZKAGE_PROOF";
+
+// Helper function to generate a random Scalar using our RngCore
+fn random_scalar<R: RngCore>(rng: &mut R) -> Scalar {
+    // Generate 64 random bytes
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    
+    // Use Scalar::from_bytes_mod_order_wide which is designed to create
+    // uniformly distributed Scalars from 64 random bytes
+    Scalar::from_bytes_mod_order_wide(&bytes)
+}
+
+// Helper function to generate a random RistrettoPoint using our RngCore
+fn random_ristretto<R: RngCore>(rng: &mut R) -> RistrettoPoint {
+    // Generate a random scalar first
+    let scalar = random_scalar(rng);
+    
+    // Multiply the scalar by the generator point to get a random RistrettoPoint
+    RistrettoPoint::generator() * scalar
+}
 
 /// This value is smaller than it could be for performance reasons.
 pub const MAX_RATE_LIMIT_EXPONENT: u32 = 31;
@@ -97,8 +116,8 @@ impl<D: Digest<OutputSize = U32>> Default for Params<D> {
     fn default() -> Self {
         let mut hasher = D::new();
         hasher.update(b"extremely random string");
-        let mut rng = ChaCha20Rng::from_seed(hasher.finalize().into());
-        Params::random(&mut rng)
+        let rng = ChaCha20Rng::from_seed(hasher.finalize().into());
+        Params::random(rng)
     }
 }
 
@@ -106,10 +125,10 @@ impl<D: Digest<OutputSize = U32>> Params<D> {
     /// Generate random parameters using the given RNG.
     pub fn random(mut rng: impl CryptoRngCore) -> Self {
         Params {
-            h1: G::random(&mut rng),
-            h2: G::random(&mut rng),
-            h3: G::random(&mut rng),
-            h4: G::random(&mut rng),
+            h1: random_ristretto(&mut rng),
+            h2: random_ristretto(&mut rng),
+            h3: random_ristretto(&mut rng),
+            h4: random_ristretto(&mut rng),
             _hasher: PhantomData::default(),
         }
     }
@@ -131,7 +150,7 @@ impl IssuerPrivateKey {
     /// Generate random private key for the issuer.
     pub fn random(mut rng: impl CryptoRngCore) -> Self {
         IssuerPrivateKey {
-            x: Scalar::random(&mut rng),
+            x: random_scalar(&mut rng),
         }
     }
 
@@ -161,7 +180,7 @@ impl ClientPrivateKey {
     /// Generate a new client private key.
     pub fn random(mut rng: impl CryptoRngCore) -> Self {
         ClientPrivateKey {
-            k: Scalar::random(&mut rng),
+            k: random_scalar(&mut rng),
         }
     }
 
@@ -172,7 +191,7 @@ impl ClientPrivateKey {
         mut rng: impl CryptoRngCore,
     ) -> CredentialRequest {
         let big_k = params.h2 * self.k;
-        let k_prime = Scalar::random(&mut rng);
+        let k_prime = random_scalar(&mut rng);
         let big_k_1 = params.h2 * k_prime;
 
         let gamma = {
@@ -181,7 +200,7 @@ impl ClientPrivateKey {
             fiat_shamir.update(big_k_1.to_bytes().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
 
-            Scalar::random(&mut fiat_shamir_rng)
+            random_scalar(&mut fiat_shamir_rng)
         };
 
         let k_bar = gamma * self.k + k_prime;
@@ -221,20 +240,20 @@ impl CredentialRequest {
             fiat_shamir.update(self.big_k.to_bytes().as_ref());
             fiat_shamir.update(big_k_1.to_bytes().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
-            Scalar::random(&mut fiat_shamir_rng)
+            random_scalar(&mut fiat_shamir_rng)
         };
 
         if client_gamma != self.gamma {
             return None;
         }
 
-        let e = Scalar::random(&mut rng);
+        let e = random_scalar(&mut rng);
         // TODO unwrap here is probably okay, because e is completely random.
         let a = (G::generator() + params.h1 * t + self.big_k) * (e + issuer_private_key.x).invert();
         let x_a = G::generator() + params.h1 * t + self.big_k;
         let x_g = G::generator() * e + issuer_public_key.w;
 
-        let alpha = Scalar::random(&mut rng);
+        let alpha = random_scalar(&mut rng);
         let y_a = a * alpha;
         let y_g = G::generator() * alpha;
 
@@ -245,7 +264,8 @@ impl CredentialRequest {
             fiat_shamir.update(y_a.to_bytes().as_ref());
             fiat_shamir.update(y_g.to_bytes().as_ref());
 
-            Scalar::random(&mut fiat_shamir.rng())
+            let mut fiat_shamir_rng = fiat_shamir.rng();
+            random_scalar(&mut fiat_shamir_rng)
         };
 
         let z = gamma * (issuer_private_key.x + e) + alpha;
@@ -285,7 +305,8 @@ impl ClientPrivateKey {
             fiat_shamir.update(y_prime_a.to_bytes().as_ref());
             fiat_shamir.update(y_prime_g.to_bytes().as_ref());
 
-            Scalar::random(&mut fiat_shamir.rng())
+            let mut fiat_shamir_rng = fiat_shamir.rng();
+            random_scalar(&mut fiat_shamir_rng)
         };
 
         if response.gamma != server_gamma {
@@ -303,36 +324,61 @@ impl ClientPrivateKey {
 
 #[test]
 fn test_credentials() {
-    use rand_core::{OsRng, RngCore};
     use sha2::Sha256;
+    
+    // Use our custom ChaCha20Rng with a fixed seed for testing
+    let seed = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    ];
+    let mut rng = ChaCha20Rng::from_seed(seed);
 
     for _ in 0..1 {
-        let issuer_private_key: IssuerPrivateKey = IssuerPrivateKey::random(OsRng);
+        // Create a new RNG for each operation to avoid ownership issues
+        let rng1 = ChaCha20Rng::from_seed(seed);
+        let issuer_private_key: IssuerPrivateKey = IssuerPrivateKey::random(rng1);
+        
+        let rng2 = ChaCha20Rng::from_seed(seed);
+        let params = Params::<Sha256>::random(rng2);
+        
+        let rng3 = ChaCha20Rng::from_seed(seed);
+        let k: ClientPrivateKey = ClientPrivateKey::random(rng3);
+        
         let issuer_public_key = issuer_private_key.public();
-        let params = Params::<Sha256>::random(OsRng);
-        let k: ClientPrivateKey = ClientPrivateKey::random(OsRng);
-        let req = k.credential_request(&params, OsRng);
-        let bound = OsRng.next_u64() % MAX_RANGE_PROOF_BOUND;
-        let epoch = OsRng.next_u32();
-        let t = OsRng.next_u64() % bound;
+        
+        let rng4 = ChaCha20Rng::from_seed(seed);
+        let req = k.credential_request(&params, rng4);
+        
+        let bound = rng.next_u64() % MAX_RANGE_PROOF_BOUND;
+        let epoch = rng.next_u32();
+        let t = rng.next_u64() % bound;
+        
+        let rng5 = ChaCha20Rng::from_seed(seed);
         let resp = req
             .respond(
                 &issuer_private_key,
                 &issuer_public_key,
                 &params,
                 Scalar::from(t),
-                OsRng,
+                rng5,
             )
             .unwrap();
+            
         let cred = k
             .create_credential(&params, &req, &resp, &issuer_public_key)
             .unwrap();
+            
         for _ in 0..10 {
-            let rate_limit_bound = OsRng.next_u32() % MAX_RATE_LIMIT_EXPONENT;
-            let i = OsRng.next_u64() % 2u64.pow(rate_limit_bound);
+            let rate_limit_bound = rng.next_u32() % MAX_RATE_LIMIT_EXPONENT;
+            let i = rng.next_u64() % 2u64.pow(rate_limit_bound);
+            
+            let rng6 = ChaCha20Rng::from_seed(seed);
             let proof = cred
-                .prove(&params, bound, epoch, OsRng, rate_limit_bound, i)
+                .prove(&params, bound, epoch, rng6, rate_limit_bound, i)
                 .unwrap();
+                
             assert!(proof.verify(&params, &issuer_private_key));
         }
     }
@@ -420,14 +466,14 @@ impl Credential {
         let mut fiat_shamir = FiatShamir::<D>::new(ZKAGE_PROOF_LABEL);
 
         // == PoK of Credential: Commitment Phase ==
-        let r1 = Scalar::random(&mut rng);
-        let r2 = Scalar::random(&mut rng);
-        let e_prime = Scalar::random(&mut rng);
-        let r2_prime = Scalar::random(&mut rng);
-        let r3_prime = Scalar::random(&mut rng);
-        let delta_prime = Scalar::random(&mut rng);
-        let k_prime = Scalar::random(&mut rng);
-        let s_prime = Scalar::random(&mut rng);
+        let r1 = random_scalar(&mut rng);
+        let r2 = random_scalar(&mut rng);
+        let e_prime = random_scalar(&mut rng);
+        let r2_prime = random_scalar(&mut rng);
+        let r3_prime = random_scalar(&mut rng);
+        let delta_prime = random_scalar(&mut rng);
+        let k_prime = random_scalar(&mut rng);
+        let s_prime = random_scalar(&mut rng);
 
         let b = G::generator() + params.h1 * self.t + params.h2 * self.k;
         let a_prime = self.a * (r1 * r2);
@@ -466,18 +512,18 @@ impl Credential {
         let mut gamma = Vec::with_capacity(rate_limit_exponent as usize);
         let mut z = Vec::with_capacity(rate_limit_exponent as usize);
         for j in 0..rate_limit_exponent {
-            let s_j = Scalar::random(&mut rng);
+            let s_j = random_scalar(&mut rng);
             s.push(s_j);
             let i_j = if (i >> j) & 1 != 0 { 1 } else { 0 };
             let com_j = params.h3 * s_j + params.h2 * Scalar::from(i_j as u64);
             com.push(com_j);
             fiat_shamir.update(com_j.to_bytes().as_ref());
             s_star += Scalar::from(2u64.pow(j)) * s_j;
-            let r_j = Scalar::random(&mut rng);
+            let r_j = random_scalar(&mut rng);
             r.push(r_j);
-            let gamma_j = Scalar::random(&mut rng);
+            let gamma_j = random_scalar(&mut rng);
             gamma.push(gamma_j);
-            let z_j = Scalar::random(&mut rng);
+            let z_j = random_scalar(&mut rng);
             z.push(z_j);
             let c0_j = com_j;
             c0.push(c0_j);
@@ -510,18 +556,18 @@ impl Credential {
         let y2 = bigint_to_scalar(&y2.into_parts().1).unwrap();
         let y3 = bigint_to_scalar(&y3.into_parts().1).unwrap();
         let y4 = bigint_to_scalar(&y4.into_parts().1).unwrap();
-        let r_y = Scalar::random(&mut rng);
-        let r_y_tilde = Scalar::random(&mut rng);
+        let r_y = random_scalar(&mut rng);
+        let r_y_tilde = random_scalar(&mut rng);
         let y_i_tilde_bound = bound_bigint.sqrt() * BigUint::from(C) * BigUint::from(L);
         let (y1_tilde, y2_tilde, y3_tilde, y4_tilde) = {
             if bound_bigint > BigUint::from(0u64) {
-                let y1_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y1_tilde = rng.gen_biguint(255);
                 let y1_tilde: BigUint = y1_tilde % &y_i_tilde_bound;
-                let y2_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y2_tilde = rng.gen_biguint(255);
                 let y2_tilde: BigUint = y2_tilde % &y_i_tilde_bound;
-                let y3_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y3_tilde = rng.gen_biguint(255);
                 let y3_tilde: BigUint = y3_tilde % &y_i_tilde_bound;
-                let y4_tilde: BigUint = RandomBits::new(255).sample(&mut rng);
+                let y4_tilde = rng.gen_biguint(255);
                 let y4_tilde: BigUint = y4_tilde % &y_i_tilde_bound;
 
                 (
@@ -557,10 +603,10 @@ impl Credential {
             + y2_tilde.square().neg()
             + y3_tilde.square().neg()
             + y4_tilde.square().neg();
-        let r_star = Scalar::random(&mut rng);
+        let r_star = random_scalar(&mut rng);
         let c_star = G::generator() * r_star + params.h1 * alpha;
         fiat_shamir.update(c_star.to_bytes().as_ref());
-        let r_star_tilde = Scalar::random(&mut rng);
+        let r_star_tilde = random_scalar(&mut rng);
         let d_star = G::generator() * r_star_tilde + params.h1 * alpha_tilde;
         fiat_shamir.update(d_star.to_bytes().as_ref());
         // == End ==

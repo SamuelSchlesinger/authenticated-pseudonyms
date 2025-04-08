@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use crate::math::{complex::Complex, mod_exp::mod_exp, quaternion::Quaternion};
-use num::{bigint::RandomBits, rational::Ratio, BigInt};
-use rand::distributions::Distribution;
-use rand::Rng;
+use crate::traits::{RngCore, RandomBigIntExt};
+use num::{rational::Ratio, BigInt};
 
 /// Decomposes the given number into a, b, c, d such that a^2 + b^2 + c^2 + d^2 = delta.
 /// Works on numbers up to about a million billion or so.
-pub fn decompose(mut rng: impl Rng, mut delta: BigInt) -> (BigInt, BigInt, BigInt, BigInt) {
+pub fn decompose(rng: &mut impl RngCore, mut delta: BigInt) -> (BigInt, BigInt, BigInt, BigInt) {
     if delta <= BigInt::from(20) {
         let first_byte = if delta > BigInt::from(0) {
             delta.to_u32_digits().1[0]
@@ -108,14 +107,14 @@ pub fn decompose(mut rng: impl Rng, mut delta: BigInt) -> (BigInt, BigInt, BigIn
     let k_limit = delta.pow(5);
     let m_delta_product: BigInt = &m * &delta;
     loop {
-        let k_candidate: BigInt = RandomBits::new(321).sample(&mut rng);
+        let k_candidate: BigInt = rng.gen_bigint(321);
         let k = &k_candidate % &k_limit;
         if &k % 2 == BigInt::from(0) {
             // we need an odd k
             continue;
         }
         let p: BigInt = &m_delta_product * &k - 1;
-        let u_candidate: BigInt = RandomBits::new(500).sample(&mut rng);
+        let u_candidate: BigInt = rng.gen_bigint(500);
         let u: BigInt = u_candidate % (&p - 1) + BigInt::from(1);
         let s = mod_exp(u, (&p - 1) / 4, p.clone());
 
@@ -161,18 +160,30 @@ pub fn decompose(mut rng: impl Rng, mut delta: BigInt) -> (BigInt, BigInt, BigIn
 
 #[test]
 fn test_decomposition() {
-    use rand::RngCore;
-    let mut rng = rand::rngs::OsRng;
+    use crate::traits::{ChaCha20Rng, RngCore};
+    
+    // Use our custom ChaCha20Rng with a fixed seed for testing
+    let seed = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    ];
+    let mut main_rng = ChaCha20Rng::from_seed(seed);
+    
     for i in 0..=100u64 {
-        let (y1, y2, y3, y4) = decompose(&mut rng, BigInt::from(i));
+        // Create a new RNG for each test to avoid ownership issues
+        let mut test_rng = ChaCha20Rng::from_seed(seed);
+        let (y1, y2, y3, y4) = decompose(&mut test_rng, BigInt::from(i));
         assert_eq!(
             &y1 * &y1 + &y2 * &y2 + &y3 * &y3 + &y4 * &y4,
             BigInt::from(i)
         );
     }
     for _i in 0..10u64 {
-        let n = rng.next_u64() % 1000000;
-        let (y1, y2, y3, y4) = decompose(&mut rng, BigInt::from(n));
+        let n = main_rng.next_u64() % 1000000;
+        let mut test_rng = ChaCha20Rng::from_seed(seed);
+        let (y1, y2, y3, y4) = decompose(&mut test_rng, BigInt::from(n));
         assert_eq!(
             &y1 * &y1 + &y2 * &y2 + &y3 * &y3 + &y4 * &y4,
             BigInt::from(n)

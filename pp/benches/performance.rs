@@ -14,14 +14,9 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use curve25519_dalek::Scalar as RScalar;
-use num::{bigint::RandomBits, BigUint};
-use rand::distributions::Distribution;
-use rand::thread_rng;
-use rand::Fill;
-use rand_chacha::ChaCha20Rng;
-use rand_core::SeedableRng;
+use num::BigUint;
 use sha2::Digest;
-use private_proofs_crypto::traits::Hasher;
+use private_proofs_crypto::traits::{RngCore, CryptoRngCore, ChaCha20Rng, RandomBitsExt};
 
 pub struct Sha256(sha2::Sha256);
 
@@ -31,20 +26,53 @@ impl Default for Sha256 {
     }
 }
 
-impl Hasher for Sha256 {
-    fn update(&mut self, bytes: &[u8]) {
-        <sha2::Sha256 as Digest>::update(&mut self.0, bytes);
+impl digest::Digest for Sha256 {
+    type OutputSize = digest::consts::U32;
+
+    fn new() -> Self {
+        Self::default()
     }
 
-    fn finalize(&self) -> [u8; 32] {
-        <sha2::Sha256 as Digest>::finalize(self.0.clone()).into()
+    fn update(&mut self, data: impl AsRef<[u8]>) {
+        <sha2::Sha256 as Digest>::update(&mut self.0, data);
+    }
+
+    fn finalize(self) -> digest::Output<Self> {
+        <sha2::Sha256 as Digest>::finalize(self.0).into()
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn finalize_into(self, out: &mut digest::Output<Self>) {
+        let result = <sha2::Sha256 as Digest>::finalize(self.0);
+        out.copy_from_slice(&result);
+    }
+
+    fn finalize_reset(&mut self) -> digest::Output<Self> {
+        let result = <sha2::Sha256 as Digest>::finalize_reset(&mut self.0);
+        result.into()
+    }
+
+    fn finalize_into_reset(&mut self, out: &mut digest::Output<Self>) {
+        let result = <sha2::Sha256 as Digest>::finalize_reset(&mut self.0);
+        out.copy_from_slice(&result);
+    }
+
+    fn digest(data: impl AsRef<[u8]>) -> digest::Output<Self> {
+        <sha2::Sha256 as Digest>::digest(data).into()
     }
 }
 
 fn chacha_rng() -> ChaCha20Rng {
-    let mut rng = thread_rng();
-    let mut seed = [0u8; 32];
-    seed.try_fill(&mut rng).unwrap();
+    // Create a seed using a fixed value for testing
+    let seed = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    ];
     ChaCha20Rng::from_seed(seed)
 }
 
@@ -70,9 +98,9 @@ fn private_benchmark(c: &mut Criterion) {
         move |b| {
             let setup = || {
                 let mut rng = chacha_rng();
-                let bound: BigUint = RandomBits::new(30).sample(&mut rng);
+                let bound = rng.gen_biguint(30);
                 let bound: BigUint = bound % BigUint::from(MAX_RANGE_PROOF_BOUND);
-                let message: BigUint = RandomBits::new(30).sample(&mut rng);
+                let message = rng.gen_biguint(30);
                 let message: BigUint = message % &bound;
                 (
                     rng,
