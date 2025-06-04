@@ -281,8 +281,8 @@ impl ClientPrivateKey {
 
         let server_gamma = {
             let mut fiat_shamir = FiatShamir::<H>::new(SERVER_ISSUANCE_LABEL);
-            fiat_shamir.update(e.to_bytes().as_ref());
-            fiat_shamir.update(a.to_bytes().as_ref());
+            fiat_shamir.update(response.e.to_bytes().as_ref());
+            fiat_shamir.update(response.a.to_bytes().as_ref());
             fiat_shamir.update(x_a.to_bytes().as_ref());
             fiat_shamir.update(x_g.to_bytes().as_ref());
             fiat_shamir.update(y_prime_a.to_bytes().as_ref());
