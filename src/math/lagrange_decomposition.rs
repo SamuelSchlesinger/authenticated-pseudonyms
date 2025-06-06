@@ -179,3 +179,138 @@ fn test_decomposition() {
         );
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use rand::SeedableRng;
+    use rand_chacha::ChaChaRng;
+    use num::Signed;
+
+    prop_compose! {
+        fn arb_small_bigint()(n: u64) -> BigInt {
+            BigInt::from(n)
+        }
+    }
+
+    prop_compose! {
+        fn arb_medium_bigint()(n: u128) -> BigInt {
+            BigInt::from(n)
+        }
+    }
+
+    #[test]
+    fn test_decompose_zero() {
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        let (a, b, c, d) = decompose(&mut rng, BigInt::from(0));
+        assert_eq!(a, BigInt::from(0));
+        assert_eq!(b, BigInt::from(0));
+        assert_eq!(c, BigInt::from(0));
+        assert_eq!(d, BigInt::from(0));
+    }
+
+    proptest! {
+        #[test]
+        fn test_decompose_small_numbers(n in 0u64..=20) {
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let (a, b, c, d) = decompose(&mut rng, BigInt::from(n));
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, BigInt::from(n));
+        }
+
+        #[test]
+        fn test_decompose_powers_of_two(power in 0u32..10) {
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let n = BigInt::from(2).pow(power);
+            let (a, b, c, d) = decompose(&mut rng, n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, n);
+        }
+
+        #[test]
+        fn test_decompose_odd_numbers(n in 1u64..1000) {
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let odd_n = BigInt::from(2 * n + 1);
+            let (a, b, c, d) = decompose(&mut rng, odd_n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, odd_n);
+        }
+
+        #[test]
+        fn test_decompose_even_numbers(n in 1u64..1000) {
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let even_n = BigInt::from(2 * n);
+            let (a, b, c, d) = decompose(&mut rng, even_n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, even_n);
+        }
+
+        #[test]
+        fn test_decompose_medium_range(n in arb_small_bigint()) {
+            if n > BigInt::from(1000000u64) {
+                return Ok(());
+            }
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let (a, b, c, d) = decompose(&mut rng, n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, n);
+        }
+
+        #[test]
+        fn test_decompose_sum_property(n in arb_small_bigint()) {
+            if n > BigInt::from(100000u64) {
+                return Ok(());
+            }
+            let mut rng = ChaChaRng::seed_from_u64(42);
+            let (a, b, c, d) = decompose(&mut rng, n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            prop_assert_eq!(sum, n.clone());
+            prop_assert!(a.abs() <= n.clone());
+            prop_assert!(b.abs() <= n.clone());
+            prop_assert!(c.abs() <= n.clone());
+            prop_assert!(d.abs() <= n);
+        }
+
+        #[test]
+        fn test_decompose_deterministic_small(n in 0u64..=20, seed: u64) {
+            let mut rng1 = ChaChaRng::seed_from_u64(seed);
+            let mut rng2 = ChaChaRng::seed_from_u64(seed);
+            let (a1, b1, c1, d1) = decompose(&mut rng1, BigInt::from(n));
+            let (a2, b2, c2, d2) = decompose(&mut rng2, BigInt::from(n));
+            prop_assert_eq!(a1, a2);
+            prop_assert_eq!(b1, b2);
+            prop_assert_eq!(c1, c2);
+            prop_assert_eq!(d1, d2);
+        }
+
+    }
+
+    #[test]
+    fn test_decompose_special_cases() {
+        let mut rng = ChaChaRng::seed_from_u64(42);
+        
+        let test_cases = vec![
+            BigInt::from(1),
+            BigInt::from(2),
+            BigInt::from(3),
+            BigInt::from(4),
+            BigInt::from(5),
+            BigInt::from(8),
+            BigInt::from(9),
+            BigInt::from(16),
+            BigInt::from(25),
+            BigInt::from(36),
+            BigInt::from(49),
+            BigInt::from(64),
+            BigInt::from(81),
+            BigInt::from(100),
+        ];
+        
+        for n in test_cases {
+            let (a, b, c, d) = decompose(&mut rng, n.clone());
+            let sum = &a * &a + &b * &b + &c * &c + &d * &d;
+            assert_eq!(sum, n);
+        }
+    }
+}

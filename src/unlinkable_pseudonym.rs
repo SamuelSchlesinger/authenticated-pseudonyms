@@ -7,9 +7,7 @@ use rand_core::{CryptoRngCore, SeedableRng};
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
 use std::ops::Neg;
-use std::marker::PhantomData;
-
-use crate::traits::Hasher;
+use sha2::{Digest, Sha256};
 
 const CLIENT_ISSUANCE_LABEL: &[u8] = b"CLIENT_ISSUANCE";
 const PSEUDONYM_LABEL: &[u8] = b"PSEUDONYM";
@@ -17,30 +15,29 @@ const GLOBAL_LABEL: &[u8] = b"SOCIAL_LOGIN";
 
 /// Parameters for the protocol.
 #[derive(Clone, Debug)]
-pub struct Params<H: Hasher> {
+pub struct Params {
     h: G1Affine,
-    _hasher: PhantomData<H>,
 }
 
-impl<H: Hasher> Params<H> {
+impl Params {
     pub fn default() -> Self {
-        let mut hasher = H::default();
+        let mut hasher = Sha256::new();
         hasher.update(b"a very special string");
-        let mut rng = ChaCha20Rng::from_seed(hasher.finalize());
+        let hash_result: [u8; 32] = hasher.finalize().into();
+        let mut rng = ChaCha20Rng::from_seed(hash_result);
         Params {
             h: G1Projective::random(&mut rng).into(),
-            _hasher: PhantomData::default(),
         }
     }
 }
 
-struct FiatShamir<H: Hasher> {
-    hasher: H,
+struct FiatShamir {
+    hasher: Sha256,
 }
 
-impl<H: Hasher> FiatShamir<H> {
+impl FiatShamir {
     fn new(label: &[u8], nonce: &[u8]) -> Self {
-        let mut hasher = H::default();
+        let mut hasher = Sha256::new();
         hasher.update(GLOBAL_LABEL);
         hasher.update(G1Affine::label());
         hasher.update(label);
@@ -53,7 +50,8 @@ impl<H: Hasher> FiatShamir<H> {
     }
 
     fn rng(&self) -> impl CryptoRngCore {
-        ChaCha20Rng::from_seed(self.hasher.finalize())
+        let hash_result: [u8; 32] = self.hasher.clone().finalize().into();
+        ChaCha20Rng::from_seed(hash_result)
     }
 }
 
@@ -109,13 +107,13 @@ impl ClientPrivateKey {
     }
 
     /// Create a request for a new credential issuance associated to the given private key.
-    pub fn request<H: Hasher>(&self, params: &Params<H>, mut rng: impl CryptoRngCore) -> CredentialRequest {
+    pub fn request(&self, params: &Params, mut rng: impl CryptoRngCore) -> CredentialRequest {
         let big_k = params.h * self.k;
         let k_prime = Scalar::random(&mut rng);
         let big_k_1 = params.h * k_prime;
 
         let gamma = {
-            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL, b"");
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL, b"");
             fiat_shamir.update(GroupEncoding::to_bytes(&big_k).as_ref());
             fiat_shamir.update(GroupEncoding::to_bytes(&big_k_1).as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -143,15 +141,15 @@ pub struct CredentialResponse {
 impl CredentialRequest {
     /// Responds to the given credential request with the data needed for the client to construct a
     /// new credential.
-    pub fn respond<H: Hasher>(
+    pub fn respond(
         &self,
         issuer_private_key: &IssuerPrivateKey,
-        params: &Params<H>,
+        params: &Params,
         mut rng: impl CryptoRngCore,
     ) -> Option<CredentialResponse> {
         let big_k_1 = params.h * self.k_bar + self.big_k * self.gamma.neg();
         let client_gamma = {
-            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL, b"");
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL, b"");
             fiat_shamir.update(G1Affine::from(self.big_k).to_compressed().as_ref());
             fiat_shamir.update(G1Affine::from(big_k_1).to_compressed().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -221,7 +219,7 @@ impl ClientPrivateKey {
 
 impl Credential {
     /// Verify the validity of the given credential.
-    pub fn verify<H: Hasher>(&self, params: &Params<H>, issuer_public_key: &IssuerPublicKey) -> Choice {
+    pub fn verify(&self, params: &Params, issuer_public_key: &IssuerPublicKey) -> Choice {
         Bls12::pairing(&self.a, &issuer_public_key.w).ct_eq(&Bls12::pairing(
             &G1Affine::from(&self.a * self.e.neg() + G1Affine::generator() + params.h * self.k),
             &G2Affine::generator(),
@@ -252,14 +250,14 @@ pub struct Pseudonym {
 
 impl Credential {
     /// Compute a pseudonym for the given context.
-    pub fn pseudonym_for<H: Hasher>(
+    pub fn pseudonym_for(
         &self,
-        params: &Params<H>,
+        params: &Params,
         relying_party_id: Scalar,
         nonce: &[u8],
         mut rng: impl CryptoRngCore,
     ) -> CtOption<Pseudonym> {
-        let mut fiat_shamir = FiatShamir::<H>::new(PSEUDONYM_LABEL, nonce);
+        let mut fiat_shamir = FiatShamir::new(PSEUDONYM_LABEL, nonce);
 
         let r1 = Scalar::random(&mut rng);
         let r2 = Scalar::random(&mut rng);
@@ -316,9 +314,9 @@ impl Credential {
 
 impl Pseudonym {
     /// Verify the pseudonym's correctness.
-    pub fn verify<H: Hasher>(
+    pub fn verify(
         &self,
-        params: &Params<H>,
+        params: &Params,
         issuer_public_key: &IssuerPublicKey,
         nonce: &[u8],
     ) -> Choice {
@@ -328,7 +326,7 @@ impl Pseudonym {
         choice &= Bls12::pairing(&self.a_prime, &issuer_public_key.w)
             .ct_eq(&Bls12::pairing(&self.a_bar, &G2Affine::generator()));
 
-        let mut fiat_shamir = FiatShamir::<H>::new(PSEUDONYM_LABEL, nonce);
+        let mut fiat_shamir = FiatShamir::new(PSEUDONYM_LABEL, nonce);
 
         fiat_shamir.update(GroupEncoding::to_bytes(&self.a_prime).as_ref());
         fiat_shamir.update(GroupEncoding::to_bytes(&self.b_bar).as_ref());
@@ -370,8 +368,7 @@ impl Pseudonym {
 fn test() {
     for _ in 0..10 {
         use rand_core::OsRng;
-        use sha2::Sha256;
-        let params = Params::<Sha256>::default();
+        let params = Params::default();
         let issuer_private_key = IssuerPrivateKey::random(OsRng);
         let client_private_key = ClientPrivateKey::random(OsRng);
         let credreq = client_private_key.request(&params, OsRng);
@@ -394,5 +391,304 @@ fn test() {
             b"nonce"
         )));
         assert_eq!(pseudonym1.relying_party_id(), &relying_party_id);
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use rand::SeedableRng;
+    use rand_chacha::ChaChaRng;
+
+    prop_compose! {
+        fn arb_scalar()(seed: u64) -> Scalar {
+            let mut rng = ChaChaRng::seed_from_u64(seed);
+            Scalar::random(&mut rng)
+        }
+    }
+
+    prop_compose! {
+        fn arb_issuer_private_key()(seed: u64) -> IssuerPrivateKey {
+            let mut rng = ChaChaRng::seed_from_u64(seed);
+            IssuerPrivateKey::random(&mut rng)
+        }
+    }
+
+    prop_compose! {
+        fn arb_client_private_key()(seed: u64) -> ClientPrivateKey {
+            let mut rng = ChaChaRng::seed_from_u64(seed);
+            ClientPrivateKey::random(&mut rng)
+        }
+    }
+
+    prop_compose! {
+        fn arb_nonce()(bytes: Vec<u8>) -> Vec<u8> {
+            bytes
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_credential_issuance_always_succeeds(
+            issuer_key_seed: u64,
+            client_key_seed: u64,
+            request_seed: u64,
+            response_seed: u64
+        ) {
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            let mut response_rng = ChaChaRng::seed_from_u64(response_seed);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            if let Some(credresp) = credreq.respond(&issuer_private_key, &params, &mut response_rng) {
+                if let Some(cred) = client_private_key.create_credential(&credreq, &credresp, &issuer_private_key.public()) {
+                    prop_assert!(bool::from(cred.verify(&params, &issuer_private_key.public())));
+                }
+            }
+        }
+
+        #[test]
+        fn test_pseudonym_deterministic_for_same_relying_party(
+            issuer_key_seed: u64,
+            client_key_seed: u64,
+            relying_party_seed: u64,
+            nonce in arb_nonce(),
+            request_seed: u64,
+            response_seed: u64,
+            pseudonym_seed1: u64,
+            pseudonym_seed2: u64
+        ) {
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            let mut response_rng = ChaChaRng::seed_from_u64(response_seed);
+            let mut pseudo_rng1 = ChaChaRng::seed_from_u64(pseudonym_seed1);
+            let mut pseudo_rng2 = ChaChaRng::seed_from_u64(pseudonym_seed2);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            let mut rp_rng = ChaChaRng::seed_from_u64(relying_party_seed);
+            let relying_party_id = Scalar::random(&mut rp_rng);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            if let Some(credresp) = credreq.respond(&issuer_private_key, &params, &mut response_rng) {
+                if let Some(cred) = client_private_key.create_credential(&credreq, &credresp, &issuer_private_key.public()) {
+                    let opt1: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id, &nonce, &mut pseudo_rng1).into();
+                    let opt2: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id, &nonce, &mut pseudo_rng2).into();
+                    if let (Some(pseudonym1), Some(pseudonym2)) = (opt1, opt2) {
+                        prop_assert_eq!(pseudonym1.pseudonym_id(), pseudonym2.pseudonym_id());
+                        prop_assert_eq!(pseudonym1.relying_party_id(), pseudonym2.relying_party_id());
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_pseudonym_different_for_different_relying_parties(
+            issuer_key_seed: u64,
+            client_key_seed: u64,
+            relying_party_seed1: u64,
+            relying_party_seed2: u64,
+            nonce in arb_nonce(),
+            request_seed: u64,
+            response_seed: u64,
+            pseudonym_seed1: u64,
+            pseudonym_seed2: u64
+        ) {
+            if relying_party_seed1 == relying_party_seed2 {
+                return Ok(());
+            }
+            
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            let mut response_rng = ChaChaRng::seed_from_u64(response_seed);
+            let mut pseudo_rng1 = ChaChaRng::seed_from_u64(pseudonym_seed1);
+            let mut pseudo_rng2 = ChaChaRng::seed_from_u64(pseudonym_seed2);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            let mut rp_rng1 = ChaChaRng::seed_from_u64(relying_party_seed1);
+            let mut rp_rng2 = ChaChaRng::seed_from_u64(relying_party_seed2);
+            let relying_party_id1 = Scalar::random(&mut rp_rng1);
+            let relying_party_id2 = Scalar::random(&mut rp_rng2);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            if let Some(credresp) = credreq.respond(&issuer_private_key, &params, &mut response_rng) {
+                if let Some(cred) = client_private_key.create_credential(&credreq, &credresp, &issuer_private_key.public()) {
+                    let opt1: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id1, &nonce, &mut pseudo_rng1).into();
+                    let opt2: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id2, &nonce, &mut pseudo_rng2).into();
+                    if let (Some(pseudonym1), Some(pseudonym2)) = (opt1, opt2) {
+                        prop_assert_ne!(pseudonym1.pseudonym_id(), pseudonym2.pseudonym_id());
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_pseudonym_verify_with_correct_nonce(
+            issuer_key_seed: u64,
+            client_key_seed: u64,
+            relying_party_seed: u64,
+            nonce in arb_nonce(),
+            request_seed: u64,
+            response_seed: u64,
+            pseudonym_seed: u64
+        ) {
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            let mut response_rng = ChaChaRng::seed_from_u64(response_seed);
+            let mut pseudo_rng = ChaChaRng::seed_from_u64(pseudonym_seed);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            let mut rp_rng = ChaChaRng::seed_from_u64(relying_party_seed);
+            let relying_party_id = Scalar::random(&mut rp_rng);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            if let Some(credresp) = credreq.respond(&issuer_private_key, &params, &mut response_rng) {
+                if let Some(cred) = client_private_key.create_credential(&credreq, &credresp, &issuer_private_key.public()) {
+                    let opt: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id, &nonce, &mut pseudo_rng).into();
+                    if let Some(pseudonym) = opt {
+                        prop_assert!(bool::from(pseudonym.verify(&params, &issuer_private_key.public(), &nonce)));
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_pseudonym_verify_fails_with_wrong_nonce(
+            issuer_key_seed: u64,
+            client_key_seed: u64,
+            relying_party_seed: u64,
+            nonce1 in arb_nonce(),
+            nonce2 in arb_nonce(),
+            request_seed: u64,
+            response_seed: u64,
+            pseudonym_seed: u64
+        ) {
+            if nonce1 == nonce2 {
+                return Ok(());
+            }
+            
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            let mut response_rng = ChaChaRng::seed_from_u64(response_seed);
+            let mut pseudo_rng = ChaChaRng::seed_from_u64(pseudonym_seed);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            let mut rp_rng = ChaChaRng::seed_from_u64(relying_party_seed);
+            let relying_party_id = Scalar::random(&mut rp_rng);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            if let Some(credresp) = credreq.respond(&issuer_private_key, &params, &mut response_rng) {
+                if let Some(cred) = client_private_key.create_credential(&credreq, &credresp, &issuer_private_key.public()) {
+                    let opt: Option<Pseudonym> = cred.pseudonym_for(&params, relying_party_id, &nonce1, &mut pseudo_rng).into();
+                    if let Some(pseudonym) = opt {
+                        prop_assert!(!bool::from(pseudonym.verify(&params, &issuer_private_key.public(), &nonce2)));
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn test_issuer_public_key_consistency(seed: u64) {
+            let mut rng = ChaChaRng::seed_from_u64(seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut rng);
+            let public_key1 = issuer_private_key.public();
+            let public_key2 = issuer_private_key.public();
+            
+            prop_assert_eq!(public_key1.w.to_bytes(), public_key2.w.to_bytes());
+        }
+
+        #[test]
+        fn test_credential_request_validation(
+            client_key_seed: u64,
+            request_seed: u64
+        ) {
+            let mut request_rng = ChaChaRng::seed_from_u64(request_seed);
+            
+            let params = Params::default();
+            let mut client_rng = ChaChaRng::seed_from_u64(client_key_seed);
+            let client_private_key = ClientPrivateKey::random(&mut client_rng);
+            
+            let credreq = client_private_key.request(&params, &mut request_rng);
+            
+            prop_assert!(credreq.gamma != Scalar::zero());
+            prop_assert!(credreq.k_bar != Scalar::zero());
+        }
+
+        #[test]
+        fn test_unlinkability_of_pseudonyms(
+            issuer_key_seed: u64,
+            client_key_seed1: u64,
+            client_key_seed2: u64,
+            relying_party_seed: u64,
+            nonce in arb_nonce(),
+            request_seed1: u64,
+            request_seed2: u64,
+            response_seed1: u64,
+            response_seed2: u64,
+            pseudonym_seed1: u64,
+            pseudonym_seed2: u64
+        ) {
+            if client_key_seed1 == client_key_seed2 {
+                return Ok(());
+            }
+            
+            let mut request_rng1 = ChaChaRng::seed_from_u64(request_seed1);
+            let mut request_rng2 = ChaChaRng::seed_from_u64(request_seed2);
+            let mut response_rng1 = ChaChaRng::seed_from_u64(response_seed1);
+            let mut response_rng2 = ChaChaRng::seed_from_u64(response_seed2);
+            let mut pseudo_rng1 = ChaChaRng::seed_from_u64(pseudonym_seed1);
+            let mut pseudo_rng2 = ChaChaRng::seed_from_u64(pseudonym_seed2);
+            
+            let params = Params::default();
+            let mut key_rng = ChaChaRng::seed_from_u64(issuer_key_seed);
+            let issuer_private_key = IssuerPrivateKey::random(&mut key_rng);
+            let mut client_rng1 = ChaChaRng::seed_from_u64(client_key_seed1);
+            let mut client_rng2 = ChaChaRng::seed_from_u64(client_key_seed2);
+            let client_private_key1 = ClientPrivateKey::random(&mut client_rng1);
+            let client_private_key2 = ClientPrivateKey::random(&mut client_rng2);
+            let mut rp_rng = ChaChaRng::seed_from_u64(relying_party_seed);
+            let relying_party_id = Scalar::random(&mut rp_rng);
+            
+            let credreq1 = client_private_key1.request(&params, &mut request_rng1);
+            let credreq2 = client_private_key2.request(&params, &mut request_rng2);
+            
+            if let (Some(credresp1), Some(credresp2)) = (
+                credreq1.respond(&issuer_private_key, &params, &mut response_rng1),
+                credreq2.respond(&issuer_private_key, &params, &mut response_rng2)
+            ) {
+                if let (Some(cred1), Some(cred2)) = (
+                    client_private_key1.create_credential(&credreq1, &credresp1, &issuer_private_key.public()),
+                    client_private_key2.create_credential(&credreq2, &credresp2, &issuer_private_key.public())
+                ) {
+                    let opt1: Option<Pseudonym> = cred1.pseudonym_for(&params, relying_party_id, &nonce, &mut pseudo_rng1).into();
+                    let opt2: Option<Pseudonym> = cred2.pseudonym_for(&params, relying_party_id, &nonce, &mut pseudo_rng2).into();
+                    if let (Some(pseudonym1), Some(pseudonym2)) = (opt1, opt2) {
+                        prop_assert_ne!(pseudonym1.pseudonym_id(), pseudonym2.pseudonym_id());
+                    }
+                }
+            }
+        }
     }
 }

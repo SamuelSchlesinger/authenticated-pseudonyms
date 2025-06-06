@@ -40,7 +40,7 @@ fn public_benchmark(c: &mut Criterion) {
     let issuer_private_key = IssuerPrivateKey::random(&mut rng);
     let client_private_key = ClientPrivateKey::random(&mut rng);
     let issuer_public_key = issuer_private_key.public();
-    let params: Params = Params::default();
+    let params = Params::default();
     c.bench_function("public::issuance", {
         let issuer_private_key = issuer_private_key.clone();
         let client_private_key = client_private_key.clone();
@@ -64,7 +64,7 @@ fn public_benchmark(c: &mut Criterion) {
                 let resp = req
                     .respond(&issuer_private_key, &params, message, &mut rng)
                     .unwrap();
-                let cred = client_private_key
+                client_private_key
                     .create_credential(&params, &req, &resp, &issuer_public_key)
                     .unwrap();
             };
@@ -141,7 +141,7 @@ fn public_benchmark(c: &mut Criterion) {
                     .unwrap();
                 (rng, bound, proof)
             };
-            let routine = |(mut rng, bound, pf): (ChaCha20Rng, u64, Proof)| {
+            let routine = |(_rng, _bound, pf): (ChaCha20Rng, u64, Proof)| {
                 let _ = pf.verify(&params, &issuer_public_key);
             };
             b.iter_batched(setup, routine, criterion::BatchSize::SmallInput);
@@ -158,7 +158,7 @@ fn private_benchmark(c: &mut Criterion) {
     let issuer_private_key = IssuerPrivateKey::random(&mut rng);
     let client_private_key = ClientPrivateKey::random(&mut rng);
     let issuer_public_key = issuer_private_key.public();
-    let params: Params = Params::default();
+    let params = Params::default();
     c.bench_function("private::issuance", {
         let issuer_private_key = issuer_private_key.clone();
         let client_private_key = client_private_key.clone();
@@ -188,7 +188,7 @@ fn private_benchmark(c: &mut Criterion) {
                         &mut rng,
                     )
                     .unwrap();
-                let cred = client_private_key
+                client_private_key
                     .create_credential(&params, &req, &resp, &issuer_public_key)
                     .unwrap();
             };
@@ -267,7 +267,7 @@ fn private_benchmark(c: &mut Criterion) {
                     .unwrap();
                 (rng, bound, proof)
             };
-            let routine = |(mut rng, bound, pf): (ChaCha20Rng, u64, Proof)| {
+            let routine = |(_rng, _bound, pf): (ChaCha20Rng, u64, Proof)| {
                 let _ = pf.verify(&params, &issuer_private_key);
             };
             b.iter_batched(setup, routine, criterion::BatchSize::SmallInput);

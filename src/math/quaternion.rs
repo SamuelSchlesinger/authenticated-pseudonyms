@@ -15,6 +15,9 @@
 use num::{rational::Ratio, traits::Euclid, BigInt};
 use std::ops::{Add, Mul, Neg, Sub};
 
+#[cfg(test)]
+use proptest::prelude::*;
+
 /// Rational quaternions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quaternion {
@@ -262,6 +265,257 @@ impl Mul for &Quaternion {
             b: &self.b * &rhs.a + &self.a * &rhs.b + &self.c * &rhs.d - &self.d * &rhs.c,
             c: &self.a * &rhs.c + &self.c * &rhs.a + &self.d * &rhs.b - &self.b * &rhs.d,
             d: &self.a * &rhs.d + &self.d * &rhs.a + &self.b * &rhs.c - &self.c * &rhs.b,
+        }
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::test_runner::Config;
+
+    prop_compose! {
+        fn arb_ratio()(num: i64, den in 1i64..=100) -> Ratio<BigInt> {
+            Ratio::new(BigInt::from(num), BigInt::from(den))
+        }
+    }
+
+    prop_compose! {
+        fn arb_quaternion()(a in arb_ratio(), b in arb_ratio(), c in arb_ratio(), d in arb_ratio()) -> Quaternion {
+            Quaternion { a, b, c, d }
+        }
+    }
+
+    prop_compose! {
+        fn arb_nonzero_quaternion()(a in arb_ratio(), b in arb_ratio(), c in arb_ratio(), d in arb_ratio()) -> Quaternion {
+            let q = Quaternion { a, b, c, d };
+            if q == Quaternion::zero() {
+                Quaternion {
+                    a: Ratio::from(BigInt::from(1)),
+                    b: Ratio::from(BigInt::from(0)),
+                    c: Ratio::from(BigInt::from(0)),
+                    d: Ratio::from(BigInt::from(0)),
+                }
+            } else {
+                q
+            }
+        }
+    }
+
+    prop_compose! {
+        fn arb_hurwitz_integer()(a: i32, b: i32, c: i32, d: i32) -> Quaternion {
+            Quaternion {
+                a: Ratio::from(BigInt::from(a)),
+                b: Ratio::from(BigInt::from(b)),
+                c: Ratio::from(BigInt::from(c)),
+                d: Ratio::from(BigInt::from(d)),
+            }
+        }
+    }
+
+    prop_compose! {
+        fn arb_hurwitz_half_integer()(a: i32, b: i32, c: i32, d: i32) -> Quaternion {
+            let one_half = Ratio::new(BigInt::from(1), BigInt::from(2));
+            Quaternion {
+                a: Ratio::from(BigInt::from(a)) + &one_half,
+                b: Ratio::from(BigInt::from(b)) + &one_half,
+                c: Ratio::from(BigInt::from(c)) + &one_half,
+                d: Ratio::from(BigInt::from(d)) + &one_half,
+            }
+        }
+    }
+
+    prop_compose! {
+        fn arb_hurwitz()(use_half_integer: bool, a: i32, b: i32, c: i32, d: i32) -> Quaternion {
+            if use_half_integer {
+                let one_half = Ratio::new(BigInt::from(1), BigInt::from(2));
+                Quaternion {
+                    a: Ratio::from(BigInt::from(a)) + &one_half,
+                    b: Ratio::from(BigInt::from(b)) + &one_half,
+                    c: Ratio::from(BigInt::from(c)) + &one_half,
+                    d: Ratio::from(BigInt::from(d)) + &one_half,
+                }
+            } else {
+                Quaternion {
+                    a: Ratio::from(BigInt::from(a)),
+                    b: Ratio::from(BigInt::from(b)),
+                    c: Ratio::from(BigInt::from(c)),
+                    d: Ratio::from(BigInt::from(d)),
+                }
+            }
+        }
+    }
+
+    prop_compose! {
+        fn arb_nonzero_hurwitz()(q in arb_hurwitz()) -> Quaternion {
+            if q == Quaternion::zero() {
+                Quaternion {
+                    a: Ratio::from(BigInt::from(1)),
+                    b: Ratio::from(BigInt::from(0)),
+                    c: Ratio::from(BigInt::from(0)),
+                    d: Ratio::from(BigInt::from(0)),
+                }
+            } else {
+                q
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(Config::with_cases(32))]
+        
+        #[test]
+        fn test_add_commutative(a in arb_quaternion(), b in arb_quaternion()) {
+            prop_assert_eq!(&a + &b, &b + &a);
+        }
+
+        #[test]
+        fn test_add_associative(a in arb_quaternion(), b in arb_quaternion(), c in arb_quaternion()) {
+            prop_assert_eq!(&(&a + &b) + &c, &a + &(&b + &c));
+        }
+
+        #[test]
+        fn test_add_identity(a in arb_quaternion()) {
+            let zero = Quaternion::zero();
+            prop_assert_eq!(&a + &zero, a.clone());
+            prop_assert_eq!(&zero + &a, a);
+        }
+
+        #[test]
+        fn test_sub_inverse_add(a in arb_quaternion(), b in arb_quaternion()) {
+            prop_assert_eq!(&(&a + &b) - &b, a);
+        }
+
+        #[test]
+        fn test_mul_associative(a in arb_quaternion(), b in arb_quaternion(), c in arb_quaternion()) {
+            prop_assert_eq!(&(&a * &b) * &c, &a * &(&b * &c));
+        }
+
+        #[test]
+        fn test_mul_identity(a in arb_quaternion()) {
+            let one = Quaternion {
+                a: Ratio::from(BigInt::from(1)),
+                b: Ratio::from(BigInt::from(0)),
+                c: Ratio::from(BigInt::from(0)),
+                d: Ratio::from(BigInt::from(0)),
+            };
+            prop_assert_eq!(&a * &one, a.clone());
+            prop_assert_eq!(&one * &a, a);
+        }
+
+        #[test]
+        fn test_distributive_left(a in arb_quaternion(), b in arb_quaternion(), c in arb_quaternion()) {
+            prop_assert_eq!(&a * &(&b + &c), &(&a * &b) + &(&a * &c));
+        }
+
+        #[test]
+        fn test_distributive_right(a in arb_quaternion(), b in arb_quaternion(), c in arb_quaternion()) {
+            prop_assert_eq!(&(&a + &b) * &c, &(&a * &c) + &(&b * &c));
+        }
+
+        #[test]
+        fn test_conjugate_involution(a in arb_quaternion()) {
+            prop_assert_eq!(a.conjugate().conjugate(), a);
+        }
+
+        #[test]
+        fn test_conjugate_norm(a in arb_quaternion()) {
+            let conj_a = a.conjugate();
+            let norm_via_conj = (&a * &conj_a).a.clone();
+            let norm_direct = a.norm();
+            prop_assert_eq!(norm_via_conj, norm_direct);
+        }
+
+        #[test]
+        fn test_norm_multiplicative(a in arb_quaternion(), b in arb_quaternion()) {
+            let norm_product = (&a * &b).norm();
+            let product_norms = a.norm() * b.norm();
+            let epsilon = Ratio::from(BigInt::from(1)) / Ratio::from(BigInt::from(1000000));
+            let diff = if norm_product > product_norms { norm_product - product_norms } else { product_norms - norm_product };
+            prop_assert!(diff < epsilon);
+        }
+
+        #[test]
+        fn test_pow_correctness(a in arb_quaternion(), n in 0usize..10) {
+            let mut expected = Quaternion {
+                a: Ratio::from(BigInt::from(1)),
+                b: Ratio::from(BigInt::from(0)),
+                c: Ratio::from(BigInt::from(0)),
+                d: Ratio::from(BigInt::from(0)),
+            };
+            for _ in 0..n {
+                expected = &expected * &a;
+            }
+            prop_assert_eq!(a.pow(n), expected);
+        }
+
+        #[test]
+        fn test_is_hurwitz_invariant(q in arb_hurwitz()) {
+            prop_assert!(q.is_hurwitz());
+        }
+
+        #[test]
+        fn test_hurwitz_closed_under_add(a in arb_hurwitz(), b in arb_hurwitz()) {
+            prop_assert!((&a + &b).is_hurwitz());
+        }
+
+        #[test]
+        fn test_hurwitz_closed_under_sub(a in arb_hurwitz(), b in arb_hurwitz()) {
+            prop_assert!((&a - &b).is_hurwitz());
+        }
+
+        #[test]
+        fn test_hurwitz_closed_under_mul(a in arb_hurwitz(), b in arb_hurwitz()) {
+            prop_assert!((&a * &b).is_hurwitz());
+        }
+
+        #[test]
+        fn test_normalize_hurwitz_preserves_hurwitz(q in arb_hurwitz()) {
+            let normalized = q.normalize_hurwitz();
+            prop_assert!(normalized.is_hurwitz());
+            prop_assert!(normalized.a.is_integer());
+            prop_assert!(normalized.b.is_integer());
+            prop_assert!(normalized.c.is_integer());
+            prop_assert!(normalized.d.is_integer());
+        }
+
+        #[test]
+        fn test_nearest_hurwitz_is_hurwitz(q in arb_quaternion()) {
+            let nearest = q.nearest_hurwitz();
+            prop_assert!(nearest.is_hurwitz());
+        }
+
+        #[test]
+        fn test_divide_with_remainder_hurwitz(a in arb_hurwitz(), b in arb_nonzero_hurwitz()) {
+            let (q, r) = a.divide_with_remainder(&b);
+            prop_assert!(q.is_hurwitz());
+            prop_assert!(r.is_hurwitz());
+            prop_assert_eq!(&(&q * &b) + &r, a);
+        }
+
+        #[test]
+        fn test_gcrd_divides_both(a in arb_hurwitz(), b in arb_hurwitz()) {
+            if a == Quaternion::zero() && b == Quaternion::zero() {
+                return Ok(());
+            }
+            let gcd = a.clone().gcrd(b.clone());
+            if gcd != Quaternion::zero() {
+                let (_, r1) = a.divide_with_remainder(&gcd);
+                let (_, r2) = b.divide_with_remainder(&gcd);
+                prop_assert_eq!(r1, Quaternion::zero());
+                prop_assert_eq!(r2, Quaternion::zero());
+            }
+        }
+
+        #[test]
+        fn test_scale_linearity(q in arb_quaternion(), k: i32) {
+            let k_ratio = Ratio::from(BigInt::from(k));
+            let q_clone = q.clone();
+            let scaled = q.scale(|x| x * &k_ratio);
+            prop_assert_eq!(scaled.a, &q_clone.a * &k_ratio);
+            prop_assert_eq!(scaled.b, &q_clone.b * &k_ratio);
+            prop_assert_eq!(scaled.c, &q_clone.c * &k_ratio);
+            prop_assert_eq!(scaled.d, &q_clone.d * &k_ratio);
         }
     }
 }

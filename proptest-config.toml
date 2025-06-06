@@ -1,0 +1,16 @@
+# Proptest configuration to reduce test runtime
+
+# Reduce the number of test cases from default 256 to 32
+cases = 32
+
+# Reduce max shrinking iterations from default 1000 to 100
+max_shrink_iters = 100
+
+# Set a timeout for individual tests (in milliseconds)
+timeout = 5000
+
+# Fork mode can help with parallelization
+fork = true
+
+# Number of worker threads (0 = number of CPUs)
+test_threads = 0

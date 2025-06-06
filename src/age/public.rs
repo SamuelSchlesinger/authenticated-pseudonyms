@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::math;
-use crate::traits::Hasher;
 
+use sha2::{Digest, Sha256};
 use bls12_381::{Bls12, G1Affine, G1Projective, G2Affine, Scalar};
 use group::ff::Field;
 use group::{Group, GroupEncoding};
@@ -25,7 +25,6 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::{CryptoRngCore, SeedableRng};
 
 use std::ops::Neg;
-use std::marker::PhantomData;
 
 const GLOBAL_LABEL: &[u8] = b"ZKAGE_CREDENTIALS_PUBLIC";
 const CLIENT_ISSUANCE_LABEL: &[u8] = b"CLIENT_ISSUANCE";
@@ -43,18 +42,17 @@ const C: u128 = 2u128.pow(80);
 /// TODO describe security parameter
 const L: u128 = 2u128.pow(30);
 
-struct FiatShamir<H: Hasher> {
-    hasher: H,
-    _hasher: PhantomData<H>,
+struct FiatShamir {
+    hasher: Sha256,
 }
 
-impl<H: Hasher> FiatShamir<H> {
+impl FiatShamir {
     fn new(label: &[u8]) -> Self {
-        let mut hasher = H::default();
+        let mut hasher = Sha256::new();
         hasher.update(GLOBAL_LABEL);
         hasher.update(label);
         hasher.update(G1Affine::label());
-        FiatShamir { hasher, _hasher: PhantomData::default() }
+        FiatShamir { hasher }
     }
 
     fn update(&mut self, bytes: &[u8]) {
@@ -62,22 +60,23 @@ impl<H: Hasher> FiatShamir<H> {
     }
 
     fn rng(&self) -> impl CryptoRngCore {
-        ChaCha20Rng::from_seed(self.hasher.finalize())
+        let hash_result: [u8; 32] = self.hasher.clone().finalize().into();
+        ChaCha20Rng::from_seed(hash_result)
     }
 
     fn rph(&self) -> BigUint {
-        BigUint::from_bytes_le(&self.hasher.finalize()) % BigUint::from(C)
+        let hash_result: [u8; 32] = self.hasher.clone().finalize().into();
+        BigUint::from_bytes_le(&hash_result) % BigUint::from(C)
     }
 }
 
 /// Global parameters for the scheme.
 #[derive(Debug, Clone)]
-pub struct Params<H: Hasher> {
+pub struct Params {
     h1: G1Affine,
     h2: G1Affine,
     h3: G1Affine,
     h4: G1Affine,
-    _hasher: PhantomData<H>,
 }
 
 trait HasLabel {
@@ -90,16 +89,17 @@ impl HasLabel for G1Affine {
     }
 }
 
-impl<H: Hasher> Default for Params<H> {
+impl Default for Params {
     fn default() -> Self {
-        let mut hasher = H::default();
+        let mut hasher = Sha256::new();
         hasher.update(b"extremely random string");
-        let mut rng = ChaCha20Rng::from_seed(hasher.finalize());
+        let hash_result: [u8; 32] = hasher.finalize().into();
+        let mut rng = ChaCha20Rng::from_seed(hash_result);
         Params::random(&mut rng)
     }
 }
 
-impl<H: Hasher> Params<H> {
+impl Params {
     /// Generate random parameters using the given RNG.
     pub fn random(mut rng: impl CryptoRngCore) -> Self {
         Params {
@@ -107,7 +107,6 @@ impl<H: Hasher> Params<H> {
             h2: G1Projective::random(&mut rng).into(),
             h3: G1Projective::random(&mut rng).into(),
             h4: G1Projective::random(&mut rng).into(),
-            _hasher: PhantomData::default(),
         }
     }
 }
@@ -163,9 +162,9 @@ impl ClientPrivateKey {
     }
 
     /// Create a request for a new credential issuance associated to the given private key.
-    pub fn credential_request<H: Hasher>(
+    pub fn credential_request(
         &self,
-        params: &Params<H>,
+        params: &Params,
         mut rng: impl CryptoRngCore,
     ) -> CredentialRequest {
         let big_k = params.h2 * self.k;
@@ -173,7 +172,7 @@ impl ClientPrivateKey {
         let big_k_1 = params.h2 * k_prime;
 
         let gamma = {
-            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL);
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL);
             fiat_shamir.update(big_k.to_bytes().as_ref());
             fiat_shamir.update(big_k_1.to_bytes().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -202,16 +201,16 @@ pub struct CredentialResponse {
 impl CredentialRequest {
     /// Responds to the given credential request with the data needed for the client to construct a
     /// new credential.
-    pub fn respond<H: Hasher>(
+    pub fn respond(
         &self,
         issuer_private_key: &IssuerPrivateKey,
-        params: &Params<H>,
+        params: &Params,
         t: Scalar,
         mut rng: impl CryptoRngCore,
     ) -> Option<CredentialResponse> {
         let big_k_1 = params.h2 * self.k_bar + self.big_k * self.gamma.neg();
         let client_gamma = {
-            let mut fiat_shamir = FiatShamir::<H>::new(CLIENT_ISSUANCE_LABEL);
+            let mut fiat_shamir = FiatShamir::new(CLIENT_ISSUANCE_LABEL);
             fiat_shamir.update(G1Affine::from(self.big_k).to_compressed().as_ref());
             fiat_shamir.update(G1Affine::from(big_k_1).to_compressed().as_ref());
             let mut fiat_shamir_rng = fiat_shamir.rng();
@@ -242,9 +241,9 @@ pub struct Credential {
 impl ClientPrivateKey {
     /// Creates a new credential using the original request, response from the server, and the
     /// client's private PRF key.
-    pub fn create_credential<H: Hasher>(
+    pub fn create_credential(
         &self,
-        params: &Params<H>,
+        params: &Params,
         request: &CredentialRequest,
         response: &CredentialResponse,
         issuer_public_key: &IssuerPublicKey,
@@ -274,12 +273,11 @@ impl ClientPrivateKey {
 #[test]
 fn test_credentials() {
     use rand_core::{OsRng, RngCore};
-    use sha2::Sha256;
 
     for _ in 0..1 {
         let issuer_private_key: IssuerPrivateKey = IssuerPrivateKey::random(OsRng);
         let issuer_public_key = issuer_private_key.public();
-        let params = Params::<Sha256>::random(OsRng);
+        let params = Params::random(OsRng);
         let k: ClientPrivateKey = ClientPrivateKey::random(OsRng);
         let req = k.credential_request(&params, OsRng);
         let bound = OsRng.next_u64() % MAX_RANGE_PROOF_BOUND;
@@ -360,9 +358,9 @@ impl Proof {
 impl Credential {
     /// Prove that the credential's underlying value is less than or equal to the given bound,
     /// along with proving/producing a valid rate limiting token for this epoch.
-    pub fn prove<H: Hasher>(
+    pub fn prove(
         &self,
-        params: &Params<H>,
+        params: &Params,
         bound: u64,
         epoch: u32,
         mut rng: impl CryptoRngCore,
@@ -382,7 +380,7 @@ impl Credential {
         if rate_limit_exponent > MAX_RATE_LIMIT_EXPONENT {
             return None;
         }
-        let mut fiat_shamir = FiatShamir::<H>::new(ZKAGE_PROOF_LABEL);
+        let mut fiat_shamir = FiatShamir::new(ZKAGE_PROOF_LABEL);
 
         // == PoK of Credential: Commitment Phase ==
         let r1 = Scalar::random(&mut rng);
@@ -605,7 +603,7 @@ impl Credential {
 
 impl Proof {
     /// Verify that the given proof is correct.
-    pub fn verify<H: Hasher>(&self, params: &Params<H>, issuer_public_key: &IssuerPublicKey) -> bool {
+    pub fn verify(&self, params: &Params, issuer_public_key: &IssuerPublicKey) -> bool {
         let sbound = Scalar::from(self.bound);
         if scalar_to_bigint(&sbound) > BigUint::from(MAX_RANGE_PROOF_BOUND) {
             return false;
@@ -628,7 +626,7 @@ impl Proof {
             return false;
         }
 
-        let mut fiat_shamir = FiatShamir::<H>::new(ZKAGE_PROOF_LABEL);
+        let mut fiat_shamir = FiatShamir::new(ZKAGE_PROOF_LABEL);
         fiat_shamir.update(self.a_prime.to_bytes().as_ref());
         fiat_shamir.update(self.b_bar.to_bytes().as_ref());
 
