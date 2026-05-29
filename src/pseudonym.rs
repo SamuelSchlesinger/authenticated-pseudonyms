@@ -34,6 +34,10 @@ pub struct Params {
 }
 
 impl Params {
+    /// Construct the default, deterministically-derived parameters shared by all
+    /// parties. The group element `h` is derived by seeding a ChaCha20 RNG with a
+    /// fixed SHA-256 hash, so every party that calls `default` obtains identical
+    /// parameters.
     pub fn default() -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"a very special string");
@@ -155,6 +159,9 @@ impl Credential {
         ))
     }
 
+    /// Return the underlying VRF key. This can be persisted as a backup and later
+    /// passed to [`Credential::recover`] to reconstruct a credential that produces
+    /// the same pseudonyms.
     pub fn vrf_key(&self) -> &Scalar {
         &self.k
     }

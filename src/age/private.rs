@@ -38,10 +38,36 @@ pub const MAX_RATE_LIMIT_EXPONENT: u32 = 31;
 /// This value can be derived from Theorem 1 in the whitepaper.
 pub const MAX_RANGE_PROOF_BOUND: u64 = 2u64.pow(36) / 3;
 
-/// TODO describe security parameter
+/// Challenge (soundness) security parameter for the Fiat-Shamir range proof.
+///
+/// The Fiat-Shamir challenge `gamma` is the SHA-256 transcript hash reduced
+/// modulo `C` (see [`FiatShamir::rph`]), so `C` bounds the size of the
+/// challenge space. With `C = 2^80` an adversary's chance of guessing the
+/// challenge ahead of time (and thus forging a proof) is on the order of
+/// `2^-80`, giving roughly 80 bits of soundness security.
+///
+/// `C` also appears in the SHARP range-proof masking/acceptance bounds
+/// (e.g. `sqrt(bound) * C * L` for the prover and `sqrt(bound) * C * (L + 1)`
+/// for the verifier), where it scales the slack that ties the challenge to the
+/// masked witness.
+// NOTE: verify — exact bit-level soundness should be confirmed against
+// Theorem 1 of the whitepaper (design/Range.pdf); the 80-bit figure is the
+// intended interpretation of C = 2^80.
 const C: u128 = 2u128.pow(80);
 
-/// TODO describe security parameter
+/// Statistical (zero-knowledge masking) security parameter for the SHARP
+/// approximate range proof.
+///
+/// The blinding terms `y_i_tilde` for the Lagrange-decomposition range proof
+/// are sampled below `sqrt(bound) * C * L` (see the commitment phase of
+/// [`Credential::prove`]), so `L` controls how much larger the masking
+/// randomness is than the value being hidden. A larger `L` yields a better
+/// statistical zero-knowledge / hiding guarantee at the cost of larger
+/// responses and a looser acceptance bound; `L = 2^30` targets roughly 30 bits
+/// of statistical security. The verifier accepts responses up to
+/// `sqrt(bound) * C * (L + 1)`.
+// NOTE: verify — the precise statistical-security claim should be confirmed
+// against Theorem 1 of the whitepaper (design/Range.pdf).
 const L: u128 = 2u128.pow(30);
 
 struct FiatShamir {
@@ -92,6 +118,9 @@ impl HasLabel for RistrettoPoint {
 }
 
 impl Default for Params {
+    /// Construct the default, deterministically-derived parameters shared by all
+    /// parties. The generators `h1..h4` are produced by seeding a ChaCha20 RNG
+    /// with a fixed SHA-256 hash, so every party obtains identical parameters.
     fn default() -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"extremely random string");
