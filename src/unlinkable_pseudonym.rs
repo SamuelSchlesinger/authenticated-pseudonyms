@@ -63,7 +63,7 @@ impl FiatShamir {
 
     fn rng(&self) -> impl CryptoRngCore {
         let hash_result: [u8; 32] = self.hasher.clone().finalize().into();
-        ChaCha20Rng::from_seed(hash_result)
+        crate::fiat_shamir::rng_from_digest(hash_result)
     }
 }
 
